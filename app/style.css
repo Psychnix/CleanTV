@@ -798,6 +798,39 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000}
 .addon-widget h3{font-size:20px;line-height:28px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .addon-widget p{font-size:20px;line-height:28px;max-height:84px;overflow:hidden}
 
+/* CleanTV host widgets below the clock (docs/addons.md). Ink follows the clock, as in the widget
+   research: white with a two-layer shadow on photos, the curated or adaptive ink where one exists, no
+   shadow on flat backgrounds. Dark ink sits on a light veil, as the clock sits on its light halo. The
+   plate is a registered material field, as .ut-lens; nothing is blurred or sampled at runtime. */
+.stage{--cw-ink:var(--ink);--cw-shadow:0 1px 2px rgba(14,10,6,.4),0 2px 8px rgba(14,10,6,.24);--cw-under:rgba(14,10,6,.38);--cw-veil:rgba(12,10,8,.14)}
+.bg-photo.tone-light{--cw-under:rgba(14,10,6,.48);--cw-veil:rgba(12,10,8,.2)}
+.bg-photo.l-list{--cw-ink:var(--tr-ink);--cw-shadow:var(--tr-shadow);--cw-under:var(--tr-under)}
+.bg-photo.l-list.has-clock-ink{--cw-ink:var(--clock-ink);--cw-shadow:none}
+.bg-photo.l-dock.has-dock-clock-ink{--cw-ink:var(--dock-clock-ink);--cw-shadow:none;--cw-under:rgba(255,248,236,.24)}
+.bg-photo.has-adaptive-ink.l-dock{--cw-ink:var(--tl-ink);--cw-shadow:var(--tl-shadow);--cw-under:var(--tl-under)}
+.bg-photo.l-list.tr-dark,.bg-photo.l-list.has-clock-ink,.bg-photo.l-dock.has-dock-clock-ink,.bg-photo.has-adaptive-ink.l-dock.adaptive-tl-dark{--cw-veil:rgba(248,252,255,.32)}
+.bg-dark,.bg-light{--cw-shadow:none;--cw-under:transparent}
+.cleantv-widgets{position:absolute;left:140px;top:260px;width:880px;display:flex;flex-direction:column;align-items:flex-start;pointer-events:none}
+.l-list .cleantv-widgets{left:auto;right:140px;align-items:flex-end}
+.cw-card{position:relative;max-width:880px;margin-bottom:16px;padding:20px 24px;border-radius:24px;overflow:hidden;color:var(--cw-ink);text-shadow:var(--cw-shadow)}
+.cw-glass{position:absolute;left:0;top:0;right:0;bottom:0;border-radius:inherit;overflow:hidden;transform:translateZ(0);-webkit-clip-path:inset(0 round 24px);clip-path:inset(0 round 24px)}
+.cw-field{position:absolute;left:0;top:0;width:1920px;height:1080px}
+.l-list .cw-field .scrim{display:none}
+.cw-veil{position:absolute;left:0;top:0;right:0;bottom:0;border-radius:inherit;background:var(--cw-veil);box-shadow:inset 0 1px 0 rgba(255,250,240,.2)}
+.bg-dark .cw-glass,.bg-light .cw-glass{display:none}
+.bg-dark .cw-card,.bg-light .cw-card{background:var(--plate)}
+.cw-content{position:relative}
+.cw-title{display:block;font-size:28px;line-height:36px;font-weight:500;letter-spacing:-.2px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cw-big{display:block;font-size:48px;line-height:56px;font-weight:500;letter-spacing:-1.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cw-small{display:block;font-size:28px;line-height:36px;font-weight:500;opacity:.8;font-variant-numeric:tabular-nums}
+.font-custom .home .cw-big{font-family:var(--font-display-family),sans-serif;font-weight:var(--font-clock-weight)}
+.font-custom .home .cw-title,.font-custom .home .cw-small{font-family:var(--font-ui-family),sans-serif;font-weight:var(--font-ui-weight)}
+/* The temperature-sized line takes the clock ink where adaptive ink gives the clock its own. */
+.bg-photo.has-adaptive-ink.l-dock .cw-big{color:var(--tl-clock-ink)}
+.bg-photo.has-adaptive-ink.l-list .cw-big{color:var(--tr-clock-ink)}
+.cw-card .ut-underlay{stroke:var(--cw-under);stroke-width:2.8}
+.cleantv-view{position:absolute;left:0;top:0;width:1920px;height:1080px}
+
 /* Add-on setup uses the same frontend and remote focus as package settings. */
 .detail-remote .appearance-rows,.detail-spotify-link .appearance-rows{width:880px;max-height:660px;overflow-y:auto;padding:8px}
 .detail-remote .settings-status,.detail-spotify-link .settings-status{left:1120px;top:244px;width:660px;font-size:24px;line-height:32px}
