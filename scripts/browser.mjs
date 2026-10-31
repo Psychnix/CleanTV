@@ -27,7 +27,8 @@ export async function openPreview({ publicFonts = false } = {}) {
         if (match) { clearTimeout(timeout); resolve(match[0]); }
       });
     });
-    browser = await chromium.launch({ headless: true });
+    // Checks expect English copy; pin the locale so a German host OS cannot switch it.
+    browser = await chromium.launch({ headless: true, args: ['--lang=en-US'] });
     return { browser, baseURL, close: async () => {
       try { await browser.close(); }
       finally { server.kill(); await once(server, 'exit'); }

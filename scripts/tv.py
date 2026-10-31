@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -12,7 +13,7 @@ from private_files import check_signed_widget
 
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
-parser.add_argument('action', choices=['info', 'install', 'launch'])
+parser.add_argument('action', choices=['info', 'apps', 'install', 'launch'])
 parser.add_argument('--host')
 args = parser.parse_args()
 config_file = ROOT / '.local/device.json'
@@ -23,7 +24,7 @@ if not host:
 ipaddress.ip_address(host)
 try:
     settings = load_settings()
-    sdb = settings['sdk_path'] / 'tools/sdb'
+    sdb = settings['sdk_path'] / ('tools/sdb.exe' if os.name == 'nt' else 'tools/sdb')
     if not sdb.is_file():
         raise ValueError('Local SDB tool missing. See docs/development.md.')
     app_id = settings['identity']['app_id']
@@ -54,6 +55,8 @@ if 'connected to ' not in connected.lower() and 'already connected' not in conne
     raise SystemExit('TV connection was not confirmed.')
 if args.action == 'info':
     run('-s', serial, 'capability')
+elif args.action == 'apps':
+    run('-s', serial, 'shell', '0', 'applist')
 elif args.action == 'launch':
     output = run('-s', serial, 'shell', '0', 'execute', app_id)
     if 'successfully launched' not in output:

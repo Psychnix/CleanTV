@@ -60,7 +60,12 @@ def forbidden(name):
             or (path.name.startswith('PP') and path.suffix.lower() in font_suffixes))
 
 
-public_fonts = {'app/assets/manrope.woff2': 'e310b55a7fd9677f5e3555e6c6c4d064fa1f1d24393f0ddbe217cea12a8c432f'}
+public_fonts = {'app/assets/manrope.woff2': 'e310b55a7fd9677f5e3555e6c6c4d064fa1f1d24393f0ddbe217cea12a8c432f',
+                # Static instances of manrope.woff2 for engines without variable fonts; see docs/asset-sources.md.
+                'app/assets/manrope-400.woff2': 'a2978d8316315d20ae53603a638843cf6b3385d5f0e1d423568e9d02d16f30f1',
+                'app/assets/manrope-500.woff2': '56ccdeb53f05d9a207cfe795be58e9d3e680e4993d1c80b2b6db7b85c0ba1afa',
+                'app/assets/manrope-600.woff2': 'f31d2b6cead6dda017c48f63bed9e09934adf716c66025aec3eaacecf14140a0',
+                'app/assets/manrope-700.woff2': '503d07ddad9e4d4e7627836bfc07010529facb534c2131eee1f2163c6a69227c'}
 for record in json.loads((ROOT / 'app/assets/fonts/SOURCES.json').read_text()):
     if Path(record['file']).suffix.lower() in font_suffixes:
         public_fonts['app/assets/fonts/' + record['file']] = record['sha256']

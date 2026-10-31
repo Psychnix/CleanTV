@@ -12,7 +12,7 @@ from unittest.mock import patch
 import zipfile
 
 from font_assets import write_widget_archive
-from local_config import ROOT, load_settings, manifest_identity, override_identity, read_password
+from local_config import ROOT, load_settings, manifest_identity, override_identity, override_required_version, read_password
 import package
 from private_files import check_signed_widget, check_widget, private_path, secret_content
 
@@ -130,6 +130,21 @@ class ToolTests(unittest.TestCase):
         (self.root / 'app/notes.txt').write_bytes(b'-----BEGIN ' + b'ENCRYPTED PRIVATE KEY-----')
         with self.assertRaises(ValueError):
             write_widget_archive(output, root=self.root, include_private=False)
+
+    def test_required_version_overlay_for_older_tvs(self):
+        original = (self.root / 'app/config.xml').read_bytes()
+        identity = {'package_id': 'AbCdEf1234', 'app_id': 'AbCdEf1234.MyHome'}
+        output = self.root / 'older.wgt'
+        write_widget_archive(output, root=self.root, include_private=False, identity=identity, required_version='3.0')
+        with zipfile.ZipFile(output) as archive:
+            manifest = archive.read('config.xml')
+        self.assertEqual(manifest_identity(manifest), identity)
+        self.assertIn(b'required_version="6.5"', original)
+        self.assertEqual(manifest, override_identity(original, identity).replace(b'required_version="6.5"', b'required_version="3.0"'))
+        self.assertEqual((self.root / 'app/config.xml').read_bytes(), original)
+        for version in ['3', '3.0"/><x a="', 3.0]:
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                override_required_version(original, version)
 
     def test_export_ignores_local_signing_config(self):
         output = self.root / 'public.wgt'

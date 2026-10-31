@@ -60,6 +60,8 @@ This mode comes from [research on Samsung's Art app](https://github.com/TheFab21
 
 Samsung Home explicitly launches the original `com.samsung.tv.csfs` app, independently of the new Home assignment. The earlier `com.samsung.tv.coba.newhome` component did not open Smart Hub visibly and is no longer the escape target. TV settings still uses `com.samsung.tv.coba.setting`. Exact on-device destinations are recorded in docs/tv-status.md; launch callbacks alone are not visual proof. There is no blind power-key fallback.
 
+Only engines without CSS custom properties (2017 Tizen 3.0 TVs) ask Tizen which apps are installed. There, Samsung Home falls back to `org.volt.firstscreen`, TV settings to `org.tizen.menu`, and Netflix, Apple TV and Prime Video to those models' app IDs. If no Samsung Home target exists or it refuses to open, Samsung Home hides CleanFrame instead. Art Mode needs the installed art app and a Frame model code. Newer engines keep the targets above and do not probe.
+
 All calls have bounded response handling. A failure leaves CleanFrame usable. No simulated device success views remain. Browser validation cannot confirm the visible Samsung destination.
 
 Installed-app discovery allows up to 20 seconds for large TV catalogues; launch controls retain an 8-second limit. Opening All apps or the editor refreshes the catalogue while retaining saved Home choices. No discovery polling runs during hidden startup.

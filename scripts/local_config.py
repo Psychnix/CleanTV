@@ -42,6 +42,21 @@ def override_identity(data, identity):
     return result
 
 
+def override_required_version(data, version):
+    """Change only the declared minimum Tizen version, for a package aimed at an older TV."""
+    if not isinstance(version, str) or not re.fullmatch(r'\d{1,2}\.\d{1,2}', version):
+        raise ValueError('required_version must be a Tizen version such as 3.0.')
+    manifest_identity(data)
+    tags = list(re.finditer(rb'<tizen:application\b[^>]*>', data))
+    if len(tags) != 1:
+        raise ValueError('Expected one tizen:application tag in the source manifest.')
+    pattern = rb'(?<![\w:.-])(required_version\s*=\s*)([\"\'])([^\"\']*)\2'
+    tag, count = re.subn(pattern, lambda match: match[1] + match[2] + version.encode() + match[2], tags[0].group())
+    if count != 1:
+        raise ValueError('Expected one required_version attribute in the application tag.')
+    return data[:tags[0].start()] + tag + data[tags[0].end():]
+
+
 def validate_identity(identity):
     package = identity.get('package_id')
     app = identity.get('app_id')
