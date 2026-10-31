@@ -18,6 +18,9 @@ const CATALOG = IDS.map((id, i) => ({ id, name: NAMES[i], show: true, iconPath: 
   { id: 'com.samsung.tv.cobalt-yt', name: 'YouTube', show: true }
 ]);
 const walls = JSON.parse(readFileSync(root + 'app/assets/wallpapers/SOURCES.json', 'utf8'));
+// Every origin config.xml allows; a request to one of them needs page.__allowExternal.
+const EXTERNAL = [...readFileSync(root + 'app/config.xml', 'utf8').matchAll(/<access origin="([^"]+)"/g)].map(m => m[1]);
+if (EXTERNAL.length < 7 || !EXTERNAL.includes('https://raw.githubusercontent.com')) throw Error('Unexpected config.xml origins: ' + EXTERNAL.join(', '));
 const out = root + '.local/qa/';
 mkdirSync(out, { recursive: true });
 const sourceFiles = ['app/main.js', 'app/device.js', 'app/index.html', 'app/style.css', 'app/config.xml', 'app/assets/wallpapers/SOURCES.json', 'app/assets/wallpapers/catalog.js', 'app/assets/adaptive-ink.js', 'app/assets/icons/metrics.js'];
@@ -108,8 +111,12 @@ async function page(options = {}, setup) {
   current.__expectedFailures = expected;
   current.on('pageerror', error => report.pageErrors.push({ section, error: error.message }));
   current.on('response', response => { if (response.status() >= 400 && !expected.some(s => response.url().includes(s))) report.pageErrors.push({ section, status: response.status(), url: response.url() }); });
-  // The Tizen add-on host contacts the catalog only after an explicit refresh.
-  current.on('request', request => { if (/^https:\/\/raw\.githubusercontent\.com\//.test(request.url()) && !owner.__allowCatalog) report.pageErrors.push({ section, unexpectedCatalogRequest: request.url() }); });
+  // No reviewed external origin is contacted without an explicit opt-in (startup never contacts one).
+  current.on('request', request => {
+    let origin = '';
+    try { origin = new URL(request.url()).origin; } catch { origin = ''; }
+    if (EXTERNAL.includes(origin) && !(owner.__allowExternal || []).includes(origin)) report.pageErrors.push({ section, unexpectedExternalRequest: request.url() });
+  });
   current.on('requestfailed', request => {
     if (owner.__closing) return;
     const failure = { section, url: request.url(), error: request.failure()?.errorText };
@@ -580,34 +587,154 @@ try {
     const samsungActions = await call('actions');
     check('Samsung group shows both native actions', samsungActions.includes('samsung.home') && samsungActions.includes('samsung.settings'));
   });
-  await run('Tizen add-on catalog is read only on request', async () => {
-    const URL = 'https://raw.githubusercontent.com/AntoinS/cleanframe-addons/main/catalog-v2.json', sha = 'a'.repeat(64);
-    const entry = (id, extra) => ({ api: 1, id, name: 'Note ' + id, version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'Hello', path: 'packages/' + id + '/1.0.0.json', sha256: sha, ...extra });
+  await run('Tizen add-ons: catalog, install, storage and settings', async () => {
+    const BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', CATALOG_URL = BASE + 'cleantv-catalog.json', sha = 'a'.repeat(64);
+    const pkg = (id, extra) => ({ api: 1, id, name: 'Note ' + id, version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'Hello from ' + id, ...extra });
+    const packages = { note: pkg('note'), plain: pkg('plain') };
+    const listed = item => ({ ...item, path: 'packages/' + item.id + '/' + item.version + '.json', sha256: createHash('sha256').update(JSON.stringify(item)).digest('hex') });
     const upstream = [{ api: 1, id: 'spotify', name: 'Spotify', version: '1.0.0', kind: 'spotify', description: 'Player', author: 'QA', license: 'MIT', path: 'packages/spotify/1.0.0.json', sha256: sha },
       { api: 2, id: 'apple-remote', name: 'iPhone Remote', version: '0.1.2', kind: 'native', description: 'Remote', author: 'QA', license: 'MIT', sha256: sha }];
-    let body = { api: 2, addons: upstream }, requests = 0, fail = false;
-    const serve = async p => p.route(URL, route => { requests++; return fail ? route.abort() : route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) }); });
+    let body = { api: 2, addons: upstream }, requests = 0, downloads = [], fail = false;
+    const cors = { 'access-control-allow-origin': '*' };
+    const serve = async p => {
+      await p.route(CATALOG_URL, route => { requests++; return fail ? route.abort() : route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify(body) }); });
+      await p.route(BASE + 'packages/**', route => {
+        const id = route.request().url().split('/').slice(-2)[0];
+        downloads.push(id);
+        return packages[id] ? route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify(packages[id]) }) : route.fulfill({ status: 404, headers: cors, body: 'missing' });
+      });
+      // A tiny settings provider for "note" only, queued before main.js publishes the registry.
+      await p.addInitScript(() => {
+        const queue = window.CleanTVAddonSettings = { queue: [] };
+        queue.register = function () { queue.queue.push(Array.prototype.slice.call(arguments)); };
+        queue.register('note', {
+          title: language => language === 'de' ? 'QA Notiz' : 'QA note settings',
+          sections: () => [{ id: 'qa', title: 'QA <b>row</b>', horizontal: true, items: [
+            { action: 'cleantv.qa.toggle', label: 'Bold', axis: 'qa', value: true, applied: !!window.__qaOn },
+            { action: 'settings.back', label: 'Spoofed host action' }] }],
+          ok: item => { if (item.action !== 'cleantv.qa.toggle') return false; window.__qaOn = !window.__qaOn; window.__qaOk = (window.__qaOk || 0) + 1; return true; }
+        });
+      });
+    };
+    const installed = id => current.waitForFunction(id => CleanFrameAddons.state().installed[id] && !CleanFrameAddons.state().busy, id);
     await page({}, serve);
-    check('Startup sends no catalog request', requests === 0);
+    check('Startup sends no catalog or package request', requests === 0 && downloads.length === 0);
+    const slot = await current.evaluate(() => { const el = document.getElementById('cleantvWidgets'); return { parent: el.parentElement.id, previous: el.previousElementSibling && el.previousElementSibling.id, inScene: !!el.closest('#phScene') }; });
+    check('The widget slot follows the caption inside Home, outside the photo list', slot.parent === 'home' && slot.previous === 'caption' && !slot.inScene, slot);
     await scene('settings');
     check('Settings lists Add-ons when the TV host exists', (await call('actions')).includes('settings.group.addons'));
-    current.__allowCatalog = true;
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
     await act('settings.group.addons'); await act('addon.tab.discover');
     check('Discover before a refresh asks for one', /Refresh the catalog/.test(await current.locator('#addonEmpty').textContent()) && requests === 0);
     await act('addon.refresh');
     await current.waitForFunction(() => /Catalog checked/.test(document.getElementById('addonEmpty')?.textContent || ''));
     check('Refresh reports the checked catalog without Android entries', requests === 1 && /Catalog checked · 2 entries · 0 for this TV/.test(await current.locator('#addonEmpty').textContent()) && !(await call('actions')).some(a => /^addon\.details\.(spotify|apple-remote)$/.test(a)));
-    body = { api: 2, addons: upstream.concat([entry('note')]) };
+    body = { api: 2, addons: upstream.concat([listed(packages.note), listed(packages.plain)]) };
     await act('addon.refresh');
     await current.waitForFunction(() => document.querySelector('[data-action="addon.details.note"]'));
     await act('addon.details.note');
-    const actions = await call('actions');
-    check('A compatible widget is shown read-only without Download', !actions.some(a => /^addon\.(install|setup|toggle|remove)\./.test(a)) && !actions.includes('group.spotify'), actions);
+    let actions = await call('actions');
+    check('A compatible widget offers Download and no settings before installation', actions.includes('addon.install.note') && !actions.some(a => /^addon\.(settings|toggle|remove|setup)\./.test(a)), actions);
+    await act('addon.install.note'); await installed('note');
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.settings.note"]'));
+    actions = await call('actions');
+    check('The verified package is installed once and its registered settings appear', downloads.join() === 'note' && actions.includes('addon.toggle.note') && actions.includes('addon.remove.note') && actions.includes('addon.settings.note') && !actions.includes('addon.install.note'), { downloads, actions });
+    await act('addon.settings.note');
+    let s = await state();
+    const settingsView = await current.evaluate(() => ({ title: document.getElementById('appearanceTitle').textContent, heading: document.querySelector('#appearanceRows .setting-label')?.innerHTML, radio: document.querySelector('[data-action="cleantv.qa.toggle"]')?.getAttribute('aria-checked'), spoof: !!document.querySelector('#appearanceRows [data-action="settings.back"]') }));
+    check('Add-on settings render through the appearance rows', s.settingsGroup === 'addon-settings' && settingsView.title === 'QA note settings' && settingsView.radio === 'false' && !settingsView.spoof && settingsView.heading === 'QA &lt;b&gt;row&lt;/b&gt;', settingsView);
+    await act('cleantv.qa.toggle');
+    check('OK reaches the provider and the row reflects its state', await current.evaluate(() => window.__qaOk === 1 && document.querySelector('[data-action="cleantv.qa.toggle"]').getAttribute('aria-checked') === 'true'));
+    check('Provider choices never change Home preferences', !Object.prototype.hasOwnProperty.call((await stored()), 'qa'));
     await nav('back');
+    s = await state();
+    check('Back returns from add-on settings to the detail view', s.settingsGroup === 'addon-detail' && (await call('actions')).includes('addon.settings.note'), s.settingsGroup);
+    await nav('back'); await act('addon.tab.discover'); await act('addon.details.plain'); await act('addon.install.plain'); await installed('plain');
+    actions = await call('actions');
+    check('An add-on without a registered provider has no settings button', actions.includes('addon.toggle.plain') && !actions.includes('addon.settings.plain'), actions);
+    await nav('back'); await act('addon.details.note'); await act('addon.toggle.note');
+    await current.waitForFunction(() => CleanFrameAddons.state().installed.note.enabled === false);
+    check('A disabled add-on hides its settings button', !(await call('actions')).includes('addon.settings.note'));
+    await act('addon.toggle.note');
+    await current.waitForFunction(() => CleanFrameAddons.state().installed.note.enabled !== false);
+    await scene('home');
+    const cards = () => current.evaluate(() => [...document.querySelectorAll('#addonWidgets .addon-widget')].filter(e => e.getClientRects().length).map(e => e.getAttribute('data-addon') + ':' + e.querySelector('p').textContent));
+    check('Installed widgets appear on Home', same(await cards(), ['note:Hello from note', 'plain:Hello from plain']), await cards());
+    const keys = await current.evaluate(() => Object.keys(localStorage).sort());
+    check('Only the add-on slots were added to storage', same(keys.filter(k => k !== 'cleantv.home.v1'), ['cleantv.addons.v1.a', 'cleantv.addons.v1.b']), keys);
+    const before = requests;
+    current.__allowExternal = [];
+    await current.reload(); await ready(); await current.waitForLoadState('networkidle');
+    check('Installed widgets survive a reload without network', requests === before && downloads.length === 2 && same(await cards(), ['note:Hello from note', 'plain:Hello from plain']), { requests, downloads });
+    await scene('settings'); await act('settings.group.addons');
+    actions = await call('actions');
+    check('Installed add-ons are listed after the reload', actions.includes('addon.details.note') && actions.includes('addon.details.plain'), actions);
+    await act('addon.tab.discover');
+    const offline = await current.evaluate(() => CleanFrameAddons.state().catalogInfo);
+    check('Discover shows the stored catalog offline', (await call('actions')).includes('addon.details.plain') && same(offline, { checked: true, total: 4, compatible: 2 }), offline);
+    await act('addon.details.note');
+    check('The settings button survives the reload', (await call('actions')).includes('addon.settings.note'));
+    await nav('back');
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
     fail = true; current.__expectedFailures.push('raw.githubusercontent.com');
     await act('addon.refresh');
-    await current.waitForFunction(() => /could not be loaded|no connection/.test(document.getElementById('appearanceStatus')?.textContent || ''));
-    check('A failed refresh keeps the last catalog and names the cause', !!(await current.$('[data-action="addon.details.note"]')) && /no connection, certificate or access policy/.test(await current.locator('#appearanceStatus').textContent()));
+    await current.waitForFunction(() => /no connection/.test(document.getElementById('appearanceStatus')?.textContent || ''));
+    check('A failed refresh keeps the stored catalog and names the cause', !!(await current.$('[data-action="addon.details.note"]')) && /no connection, certificate or access policy/.test(await current.locator('#appearanceStatus').textContent()));
+  });
+  await run('CleanTV widget slot geometry, ink and glass', async () => {
+    // A queued test widget and a queued view, registered before main.js loads.
+    const setup = p => p.addInitScript(() => {
+      const queued = name => { if (window[name]) return window[name]; const r = window[name] = { queue: [] }; r.register = function () { r.queue.push(Array.prototype.slice.call(arguments)); }; return r; };
+      window.__widgetCalls = [];
+      queued('CleanTVWidgets').register('qa', { order: 2, render: (el, ctx) => {
+        window.__widgetCalls.push(ctx);
+        if (window.__widgetEmpty) { el.innerHTML = ''; return; }
+        if (!el.firstChild) el.innerHTML = '<span class="cw-title">QA weather</span><span class="cw-big">21°</span><span class="cw-small">Wind 12 km/h</span>' + window.CleanTVIcon('<circle cx="24" cy="24" r="10"/>', 40);
+      } });
+      queued('CleanTVWidgets').register('qa-first', { order: 1, render: el => { if (!el.firstChild) el.innerHTML = '<span class="cw-small">First</span>'; } });
+    });
+    await page({}, setup);
+    await scene('home');
+    const geometry = () => current.evaluate(() => {
+      const slot = document.getElementById('cleantvWidgets'), cards = [...slot.children], visible = cards.filter(c => c.getClientRects().length);
+      const r = slot.getBoundingClientRect(), clock = document.querySelector('.caption .clock').getBoundingClientRect(), u = document.getElementById('utils').getBoundingClientRect();
+      const card = visible[visible.length - 1], field = card && card.querySelector('.cw-field'), img = card && card.querySelector('.cw-field img');
+      const cs = card && getComputedStyle(card);
+      return { order: cards.map(c => c.getAttribute('data-widget')), visible: visible.length, hidden: slot.hidden, left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), clockRight: Math.round(clock.right), utilsBottom: Math.round(u.bottom),
+        card: card && { left: card.offsetLeft + slot.offsetLeft, top: card.offsetTop + slot.offsetTop, width: card.offsetWidth, height: card.offsetHeight, transform: field.style.transform, src: img.getAttribute('src') || '', glass: getComputedStyle(card.querySelector('.cw-glass')).display, background: cs.backgroundColor, color: cs.color, shadow: cs.textShadow, padding: cs.padding, radius: cs.borderRadius },
+        clockColor: getComputedStyle(document.querySelector('.caption .clock')).color, stage: document.getElementById('stage').className };
+    });
+    let g = await geometry();
+    check('Widgets keep registration order by `order` and reuse their cards', same(g.order, ['qa-first', 'qa']) && g.visible === 2, g);
+    check('Dock slot sits at left 140, top 260 below the clock and date', g.left === 140 && g.top === 260 && !g.hidden, g);
+    check('Photo cards use the registered material field aligned to the stage', /assets\/materials\/.*-field-(blur|frost|clear)\.jpg$/.test(g.card.src) && g.card.glass === 'block' && new RegExp('^translate(3d)?\\(' + (-g.card.left) + 'px, ?' + (-g.card.top) + 'px').test(g.card.transform), g.card);
+    check('Card contract: padding 20px 24px, radius 24px, clock ink and two-layer shadow', g.card.padding === '20px 24px' && g.card.radius === '24px' && g.card.color === g.clockColor && (g.card.shadow.match(/rgba?\(/g) || []).length === 2, g.card);
+    const typeScale = await current.evaluate(() => ['cw-title', 'cw-big', 'cw-small'].map(c => { const s = getComputedStyle(document.querySelector('#cleantvWidgets .' + c)); return [c, s.fontSize, s.lineHeight, s.fontVariantNumeric, s.opacity].join(' '); }));
+    check('Type classes follow the contract', same(typeScale, ['cw-title 28px 36px normal 0.8', 'cw-big 48px 56px tabular-nums 1', 'cw-small 28px 36px tabular-nums 0.8']), typeScale);
+    const iconMarkup = await current.evaluate(() => { const svg = document.querySelector('#cleantvWidgets .cw-icon'); return svg && [svg.getAttribute('viewBox'), svg.getAttribute('width'), svg.querySelector('.ut-underlay') && svg.querySelector('.ut-underlay').getAttribute('transform'), !!svg.querySelector('.ut-ink circle')].join('|'); });
+    check('CleanTVIcon builds the underlay and ink layers on a 48 grid', iconMarkup === '0 0 48 48|40|translate(0 .5)|true', iconMarkup);
+    await call('preferences', { dateVisible: false }); await scene('home');
+    g = await geometry();
+    check('Dock slot moves to top 220 without the date', g.top === 220, g);
+    await look({ layout: 'list' }); await call('preferences', { dateVisible: true }); await scene('home');
+    g = await geometry();
+    check('List slot is right-aligned to the clock at top 300', g.right === 1780 && g.right === g.clockRight && g.top === 300, g);
+    check('List cards use the top-right ink', g.card.color === g.clockColor, g.card);
+    await call('preferences', { dateVisible: false }); await scene('home');
+    check('List slot moves to top 260 without the date', (await geometry()).top === 260);
+    await call('preferences', { controlsPosition: 'top' }); await scene('home');
+    g = await geometry();
+    check('List with top controls places the slot 40px below them', g.top === g.utilsBottom + 40 && g.right === 1780, g);
+    await look({ bg: 'dark' }); await scene('home');
+    g = await geometry();
+    check('Flat backgrounds get a flat translucent plate without shadow', g.card.glass === 'none' && g.card.background !== 'rgba(0, 0, 0, 0)' && g.card.shadow === 'none' && g.card.src === '', g.card);
+    await current.evaluate(() => { window.__widgetEmpty = true; });
+    await scene('home');
+    g = await geometry();
+    check('An empty widget hides its card', g.visible === 1 && same(g.order, ['qa-first', 'qa']), g);
+    const calls = await current.evaluate(() => window.__widgetCalls.slice(-1)[0]);
+    check('Widgets receive language, layout, background and visibility', same(Object.keys(calls).sort(), ['bg', 'language', 'layout', 'visible']) && calls.layout === 'list' && calls.bg === 'dark' && calls.visible === true, calls);
+    check('Widget plates use no live filters', (await noLiveFilters()).length === 0, await noLiveFilters());
   });
   await run('Settings focus never changes the applied Home', async () => {
     await page();
