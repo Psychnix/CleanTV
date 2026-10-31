@@ -1262,12 +1262,20 @@
     if (!metrics || !metrics.digitCell) return text;
     return text.replace(/[0-9]/g, function (digit) { return '<span class="clock-digit">' + digit + '</span>'; });
   }
+  /* Engines before Chrome 57 (2017 Tizen 3.0 TVs) lack formatToParts; these names reproduce its output. */
+  var DATE_NAMES = {
+    de: { days: ['So.', 'Mo.', 'Di.', 'Mi.', 'Do.', 'Fr.', 'Sa.'], months: ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'] },
+    en: { days: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], months: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'] }
+  };
   function dateText() {
-    var formatter = new window.Intl.DateTimeFormat(S.c.language === 'de' ? 'de-DE' : 'en-GB', { weekday: 'short', day: 'numeric', month: 'long' });
-    if (S.c.language !== 'de') return formatter.format(new Date());
-    return formatter.formatToParts(new Date()).filter(function (part) { return part.type !== 'literal'; }).map(function (part) {
+    var d = new Date(), de = S.c.language === 'de', formatter = null, names;
+    try { formatter = new window.Intl.DateTimeFormat(de ? 'de-DE' : 'en-GB', { weekday: 'short', day: 'numeric', month: 'long' }); } catch (e) { formatter = null; }
+    if (formatter && !de) return formatter.format(d);
+    if (formatter && typeof formatter.formatToParts === 'function') return formatter.formatToParts(d).filter(function (part) { return part.type !== 'literal'; }).map(function (part) {
       return part.value + (part.type === 'day' ? '.' : '');
     }).join(' ');
+    names = DATE_NAMES[de ? 'de' : 'en'];
+    return names.days[d.getDay()] + ' ' + d.getDate() + (de ? '. ' : ' ') + names.months[d.getMonth()];
   }
   function renderCaption(t, hs) {
     var html = '<span class="clock">' + clockHtml() + '</span>';
