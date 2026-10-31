@@ -83,7 +83,7 @@ The native Home operation and startup configuration from 19 October remain separ
 
 ## Clock and rendering
 
-Both layouts show the TV's local time in 12-hour format, without AM/PM or seconds. It updates at the minute boundary and on return to the launcher. No date or clock panel is shown.
+Both layouts show the TV's local time in 12-hour format (default) or 24-hour format, chosen in Settings → Clock and date; without AM/PM or seconds, and without a leading zero for the hour. It updates at the minute boundary and on return to the launcher. No date or clock panel is shown.
 
 Photographic materials and blurred panel backgrounds are generated before packaging and stay aligned with the full-screen image. Photo colour and contrast metadata are also prepared offline. Navigation does not sample image pixels, run an optics engine or apply live backdrop blur. Flat backgrounds use matching light or dark panel colours. Focus feedback uses transforms and opacity; reduced motion removes animated scaling and movement while retaining opacity feedback.
 

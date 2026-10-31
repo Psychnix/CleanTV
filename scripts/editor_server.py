@@ -15,8 +15,8 @@ import uuid
 from urllib.parse import urlsplit, parse_qs
 from preview import Preview, PreviewServer, ROOT
 
-PREF_KEYS = 'bg wall layout apps font controls focus material mode dateVisible spotifyEnabled spotifySurface spotifyTransparency controlsPosition language home'.split()
-DEFAULT_PREFS = dict(bg='photo',wall='summit',layout='dock',apps='icons',font='manrope',controls='text',focus='glass',material='tint',mode='fixed',dateVisible=True,spotifyEnabled=True,spotifySurface='cover',spotifyTransparency=60,controlsPosition='top',language='de',home=['youtube','netflix','primevideo','spotify','appletv'])
+PREF_KEYS = 'bg wall layout apps font controls focus material mode clockFormat dateVisible spotifyEnabled spotifySurface spotifyTransparency controlsPosition language home'.split()
+DEFAULT_PREFS = dict(bg='photo',wall='summit',layout='dock',apps='icons',font='manrope',controls='text',focus='glass',material='tint',mode='fixed',clockFormat='12h',dateVisible=True,spotifyEnabled=True,spotifySurface='cover',spotifyTransparency=60,controlsPosition='top',language='de',home=['youtube','netflix','primevideo','spotify','appletv'])
 
 def encode(value): return json.dumps(value,ensure_ascii=False,indent=2).encode('utf-8')
 def atomic(path, value):
