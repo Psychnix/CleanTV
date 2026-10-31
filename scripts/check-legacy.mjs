@@ -213,7 +213,8 @@ state('German photo dock', look({ language: 'de', wall: 'golden' }), [['nav', 'u
 state('German light list', look({ language: 'de', bg: 'light', layout: 'list' }));
 state('Settings overview, photo', look({ wall: 'bridge' }), [['scene', 'settings']]);
 state('Settings overview, light, German', look({ bg: 'light', language: 'de' }), [['scene', 'settings'], ['nav', 'down']]);
-for (const g of ['background', 'layout', 'typography', 'focus', 'clock', 'language', 'samsung']) state('Settings ' + g + ' detail, photo', look({ wall: 'peaks' }), [['scene', 'settings'], ['act', 'settings.group.' + g]]);
+for (const g of ['background', 'layout', 'typography', 'focus', 'clock', 'addons', 'language', 'samsung']) state('Settings ' + g + ' detail, photo', look({ wall: 'peaks' }), [['scene', 'settings'], ['act', 'settings.group.' + g]]);
+state('Settings add-ons discover, light, German', look({ bg: 'light', language: 'de' }), [['scene', 'settings'], ['act', 'settings.group.addons'], ['act', 'addon.tab.discover']]);
 state('Settings layout detail, dark list', look({ bg: 'dark', layout: 'list' }), [['scene', 'settings'], ['act', 'settings.group.layout'], ['nav', 'down']]);
 state('Settings focus detail, light type', look({ bg: 'light', focus: 'type' }), [['scene', 'settings'], ['act', 'settings.group.focus']]);
 state('Wallpaper picker', look({ wall: 'summit' }), [['scene', 'settings'], ['act', 'settings.group.background'], ['act', 'background.wallpaper']]);

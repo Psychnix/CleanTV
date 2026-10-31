@@ -108,6 +108,8 @@ async function page(options = {}, setup) {
   current.__expectedFailures = expected;
   current.on('pageerror', error => report.pageErrors.push({ section, error: error.message }));
   current.on('response', response => { if (response.status() >= 400 && !expected.some(s => response.url().includes(s))) report.pageErrors.push({ section, status: response.status(), url: response.url() }); });
+  // The Tizen add-on host contacts the catalog only after an explicit refresh.
+  current.on('request', request => { if (/^https:\/\/raw\.githubusercontent\.com\//.test(request.url()) && !owner.__allowCatalog) report.pageErrors.push({ section, unexpectedCatalogRequest: request.url() }); });
   current.on('requestfailed', request => {
     if (owner.__closing) return;
     const failure = { section, url: request.url(), error: request.failure()?.errorText };
@@ -396,7 +398,7 @@ try {
         const scale = document.getElementById('stage').getBoundingClientRect().width / 1920;
         return elements.map(e => (e.querySelector('.ico').getBoundingClientRect().left - e.querySelector('.settings-group-copy').getBoundingClientRect().right) / scale);
       });
-      check('Settings group arrows stay separate from their copy at ' + width, groups.length === 8 && groups.every(gap => gap >= 31.5), groups);
+      check('Settings group arrows stay separate from their copy at ' + width, groups.length === 9 && groups.every(gap => gap >= 31.5), groups);
       await wallpaper();
       const caption = await current.locator('.wallpaper-preview-name').evaluate(e => {
         const scale = document.getElementById('stage').getBoundingClientRect().width / 1920;
@@ -577,6 +579,35 @@ try {
     await group('samsung');
     const samsungActions = await call('actions');
     check('Samsung group shows both native actions', samsungActions.includes('samsung.home') && samsungActions.includes('samsung.settings'));
+  });
+  await run('Tizen add-on catalog is read only on request', async () => {
+    const URL = 'https://raw.githubusercontent.com/AntoinS/cleanframe-addons/main/catalog-v2.json', sha = 'a'.repeat(64);
+    const entry = (id, extra) => ({ api: 1, id, name: 'Note ' + id, version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'Hello', path: 'packages/' + id + '/1.0.0.json', sha256: sha, ...extra });
+    const upstream = [{ api: 1, id: 'spotify', name: 'Spotify', version: '1.0.0', kind: 'spotify', description: 'Player', author: 'QA', license: 'MIT', path: 'packages/spotify/1.0.0.json', sha256: sha },
+      { api: 2, id: 'apple-remote', name: 'iPhone Remote', version: '0.1.2', kind: 'native', description: 'Remote', author: 'QA', license: 'MIT', sha256: sha }];
+    let body = { api: 2, addons: upstream }, requests = 0, fail = false;
+    const serve = async p => p.route(URL, route => { requests++; return fail ? route.abort() : route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) }); });
+    await page({}, serve);
+    check('Startup sends no catalog request', requests === 0);
+    await scene('settings');
+    check('Settings lists Add-ons when the TV host exists', (await call('actions')).includes('settings.group.addons'));
+    current.__allowCatalog = true;
+    await act('settings.group.addons'); await act('addon.tab.discover');
+    check('Discover before a refresh asks for one', /Refresh the catalog/.test(await current.locator('#addonEmpty').textContent()) && requests === 0);
+    await act('addon.refresh');
+    await current.waitForFunction(() => /Catalog checked/.test(document.getElementById('addonEmpty')?.textContent || ''));
+    check('Refresh reports the checked catalog without Android entries', requests === 1 && /Catalog checked · 2 entries · 0 for this TV/.test(await current.locator('#addonEmpty').textContent()) && !(await call('actions')).some(a => /^addon\.details\.(spotify|apple-remote)$/.test(a)));
+    body = { api: 2, addons: upstream.concat([entry('note')]) };
+    await act('addon.refresh');
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.details.note"]'));
+    await act('addon.details.note');
+    const actions = await call('actions');
+    check('A compatible widget is shown read-only without Download', !actions.some(a => /^addon\.(install|setup|toggle|remove)\./.test(a)) && !actions.includes('group.spotify'), actions);
+    await nav('back');
+    fail = true; current.__expectedFailures.push('raw.githubusercontent.com');
+    await act('addon.refresh');
+    await current.waitForFunction(() => /could not be loaded|no connection/.test(document.getElementById('appearanceStatus')?.textContent || ''));
+    check('A failed refresh keeps the last catalog and names the cause', !!(await current.$('[data-action="addon.details.note"]')) && /no connection, certificate or access policy/.test(await current.locator('#appearanceStatus').textContent()));
   });
   await run('Settings focus never changes the applied Home', async () => {
     await page();
