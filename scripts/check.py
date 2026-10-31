@@ -13,12 +13,18 @@ assert identity is not None, 'Missing application identity'
 assert identity.get('package') == 'nClrkHome1', 'Keep the installed package identity stable'
 assert identity.get('id') == 'nClrkHome1.FrameHome', 'Keep the installed application ID stable'
 assert manifest.get('version') == json.loads((root / 'package.json').read_text())['version'], 'Manifest/package versions differ'
-# Network access stays limited to the reviewed add-on catalog origin. A CSP or navigation element would
-# switch the Tizen runtime to CSP mode, whose default policy blocks the inline styles legacy.js inserts.
+# Network access stays limited to the reviewed origins below, in this order. A CSP or navigation element
+# would switch the Tizen runtime to CSP mode, whose default policy blocks the inline styles legacy.js inserts.
 privileges = sorted(node.get('name') for node in manifest.findall('t:privilege', ns))
 assert privileges == sorted('http://tizen.org/privilege/' + name for name in ['application.launch', 'application.info', 'tv.inputdevice', 'internet']), 'Unexpected Tizen privileges: ' + ', '.join(privileges)
+ORIGINS = ['https://raw.githubusercontent.com', 'https://api.open-meteo.com', 'https://geocoding-api.open-meteo.com', 'https://openplzapi.org',
+           'https://accounts.spotify.com', 'https://api.spotify.com', 'https://i.scdn.co']
 access = [(node.get('origin'), node.get('subdomains')) for node in manifest.findall('w:access', ns)]
-assert access == [('https://raw.githubusercontent.com', 'false')], 'Network access must stay limited to the add-on catalog origin'
+assert access == [(origin, 'false') for origin in ORIGINS], 'Network access must stay limited to the reviewed origins: ' + repr(access)
+# Host modules may name only those origins; anything else would fail on the TV or widen the review.
+for script in sorted(list(app.glob('tizen-*.js')) + list(app.glob('cleantv-*.js'))):
+    for literal in re.findall(r'''["'](https://[^"'\s]*)''', script.read_text(encoding='utf-8')):
+        assert any(literal == origin or literal.startswith(origin + '/') for origin in ORIGINS), 'Unreviewed origin in ' + script.name + ': ' + literal
 assert not [node for node in manifest.iter() if node.tag.split('}')[-1] in ('content-security-policy', 'content-security-policy-report-only', 'allow-navigation')], 'Keep the Tizen runtime in WARP mode'
 for tag in ['content', 'icon']:
     node = manifest.find('w:' + tag, ns)
