@@ -5,7 +5,7 @@
   /* Engines without custom properties (2017 Tizen 3.0 TVs) receive the values through legacy.js.
      OLD is such an engine itself, not the resolver forced on a modern one for checks: it also lacks
      variable fonts and size-adjust and has an older compositor, so it gets fewer Home options. */
-  var LEGACY = window.CleanFrameLegacy && window.CleanFrameLegacy.active ? window.CleanFrameLegacy : null;
+  var LEGACY = window.CleanTVLegacy && window.CleanTVLegacy.active ? window.CleanTVLegacy : null;
   var OLD = !!LEGACY && !(window.CSS && window.CSS.supports && window.CSS.supports('--a', '0'));
   var CAPS = window.FrameDevice && window.FrameDevice.capabilities || {};
   var ADDONS = window.CleanFrameAddons;
@@ -52,7 +52,7 @@
     { id: '5', name: 'Every 5 minutes', min: 5 }, { id: '15', name: 'Every 15 minutes', min: 15 },
     { id: '60', name: 'Every hour', min: 60 }
   ];
-  var KEY = 'cleanframe.home.v1', storageOk = true, catalog = { loading: false, loaded: false, error: null, request: 0, revision: 0 };
+  var KEY = 'cleantv.home.v1', storageOk = true, catalog = { loading: false, loaded: false, error: null, request: 0, revision: 0 };
   var QA = window.ShoreQA = { minuteMs: window.ShoreQA && window.ShoreQA.minuteMs || 60000 };
   var FONTS = {
     manrope: { name: 'Manrope', family: 'Manrope', display: 600, ui: 500, clock: 500 },
@@ -353,7 +353,8 @@
   function safeId(id) { return typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,160}$/.test(id) && ['constructor', 'prototype', '__proto__'].indexOf(id) < 0; }
   function safeIcon(path) { return typeof path === 'string' && path.length < 2048 && /^(?:\/[^\/]|file:\/\/\/|wgt-package:\/\/\/)/.test(path) ? path : ''; }
   function load() {
-    var keys = [KEY, 'cleanframe.shore.v1'], raw, saved, i;
+    // Earlier builds saved under cleanframe.*; reading them migrates the preferences on the next save.
+    var keys = [KEY, 'cleanframe.home.v1', 'cleanframe.shore.v1'], raw, saved, i;
     for (i = 0; i < keys.length; i++) {
       try {
         raw = localStorage.getItem(keys[i]);

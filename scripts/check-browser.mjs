@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { openPreview, root } from './browser.mjs';
 
-const KEY = 'cleanframe.home.v1';
+const KEY = 'cleantv.home.v1';
 const PRIMARY = ['stremio', 'netflix', 'disneyplus', 'youtube', 'appletv', 'primevideo', 'abciview', 'sbs', 'applemusic'];
 const IDS = ['IkWsFHtOY9.Stremio', 'org.tizen.netflix-app', 'MCmYXNxgcu.DisneyPlus', '9Ur5IzDKqV.TizenYouTube', 'com.samsung.tv.aria-video', 'org.tizen.primevideo', 'mWK87Xghap.ABCiview', 'OyE7OuxlUi.SBSOnDemand', 'org.tizen.apple.apple-music'];
 const NAMES = ['Stremio', 'Netflix', 'Disney+', 'YouTube', 'Apple TV', 'Prime Video', 'ABC iview', 'SBS On Demand', 'Apple Music'];
@@ -42,9 +42,10 @@ async function run(name, fn) {
 async function closePage() { if (current) { current.__closing = true; await current.close(); current = null; } }
 
 // Production still calls its unmodified device.js adapter.
-function installHarness({ seed, legacy, mock, catalog, minuteMs, catalogFailure, noFontAPI, storageFailure, currentAppId, initiallyHidden, pauseHiddenFrames, rejectDecode }) {
+function installHarness({ seed, previous, legacy, mock, catalog, minuteMs, catalogFailure, noFontAPI, storageFailure, currentAppId, initiallyHidden, pauseHiddenFrames, rejectDecode }) {
   if (!sessionStorage.getItem('__cleanframe_seeded')) {
-    if (seed !== undefined) localStorage.setItem('cleanframe.home.v1', typeof seed === 'string' ? seed : JSON.stringify(seed));
+    if (seed !== undefined) localStorage.setItem('cleantv.home.v1', typeof seed === 'string' ? seed : JSON.stringify(seed));
+    if (previous !== undefined) localStorage.setItem('cleanframe.home.v1', typeof previous === 'string' ? previous : JSON.stringify(previous));
     if (legacy !== undefined) localStorage.setItem('cleanframe.shore.v1', typeof legacy === 'string' ? legacy : JSON.stringify(legacy));
     sessionStorage.setItem('__cleanframe_seeded', '1');
   }
@@ -53,8 +54,8 @@ function installHarness({ seed, legacy, mock, catalog, minuteMs, catalogFailure,
   window.__storageAttempts = 0;
   const set = Storage.prototype.setItem;
   Storage.prototype.setItem = function (key, value) {
-    if (key === 'cleanframe.home.v1') window.__storageAttempts++;
-    if (window.__failWrites && key === 'cleanframe.home.v1') throw new DOMException('QA storage failure', 'QuotaExceededError');
+    if (key === 'cleantv.home.v1') window.__storageAttempts++;
+    if (window.__failWrites && key === 'cleantv.home.v1') throw new DOMException('QA storage failure', 'QuotaExceededError');
     return set.call(this, key, value);
   };
   const queuedFrames = new Map(), requestFrame = window.requestAnimationFrame.bind(window), cancelFrame = window.cancelAnimationFrame.bind(window);
@@ -135,7 +136,7 @@ async function group(name) {
 const settingsSnapshot = () => current.evaluate(() => {
   const s = ShoreQA.state();
   const rendered = [...document.getElementById('stage').classList].filter(c => /^(bg|l|a|u|f|m|font)-/.test(c)).sort();
-  return { stored: localStorage.getItem('cleanframe.home.v1'), committed: s.committed, shown: s.shown, rendered, writes: s.writes, storageAttempts: window.__storageAttempts };
+  return { stored: localStorage.getItem('cleantv.home.v1'), committed: s.committed, shown: s.shown, rendered, writes: s.writes, storageAttempts: window.__storageAttempts };
 });
 const choice = (axis, value) => act('choice.' + axis + '.' + value);
 const radios = () => current.evaluate(() => [...document.querySelectorAll('#stage [role="radio"]')].filter(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden').map(e => ({ action: e.getAttribute('data-action'), checked: e.getAttribute('aria-checked'), disabled: e.getAttribute('aria-disabled') === 'true', focused: e.classList.contains('is-focus'), text: e.textContent.trim() })));
@@ -179,7 +180,7 @@ const wallpaperRowVisible = id => current.waitForFunction(expected => {
 const wallpaperSaved = () => current.evaluate(() => {
   const s = ShoreQA.state(), bg = document.getElementById('sheetBg'), veil = document.querySelector('.sheet-veil');
   const bgStyle = getComputedStyle(bg), veilStyle = getComputedStyle(veil);
-  return { stored: localStorage.getItem('cleanframe.home.v1'), committed: s.committed, writes: s.writes, attempts: window.__storageAttempts,
+  return { stored: localStorage.getItem('cleantv.home.v1'), committed: s.committed, writes: s.writes, attempts: window.__storageAttempts,
     backdrop: { src: bg.currentSrc || bg.src, opacity: bgStyle.opacity, filter: bgStyle.filter, veil: veilStyle.background, veilOpacity: veilStyle.opacity } };
 });
 const wallpaperApplied = () => current.locator('.wallpaper-choice[aria-checked="true"]').evaluateAll(elements => elements.map(e => e.getAttribute('data-action')));
@@ -228,6 +229,14 @@ try {
     check('Next completed edit writes stable home key', (await stored()).dock[0] === 'netflix');
     await current.reload(); await ready();
     check('Migrated preferences survive reload', (await state()).look.controls === 'text' && (await state()).dock[0] === 'netflix');
+    await closePage();
+    const previous = baseline({ theme: 'list', dock: ['youtube'], lastApp: 'youtube' });
+    await page({ seed: undefined, previous });
+    check('Previous cleanframe.home.v1 key is read', same((await state()).dock, ['youtube']) && (await state()).look.layout === 'list');
+    await look({ controls: 'text' });
+    check('Next edit writes cleantv.home.v1 and keeps the previous key', (await stored()).dock[0] === 'youtube' && await current.evaluate(text => localStorage.getItem('cleanframe.home.v1') === text, JSON.stringify(previous)));
+    await current.reload(); await ready();
+    check('Preferences migrated from cleanframe.home.v1 survive reload', (await state()).look.controls === 'text' && (await state()).dock[0] === 'youtube');
   });
   await run('Invalid preferences and saved native pins', async () => {
     await page({ seed: '{broken', legacy: baseline({ dock: ['netflix'], lastApp: 'netflix' }) });

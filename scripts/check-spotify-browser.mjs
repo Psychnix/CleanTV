@@ -34,7 +34,7 @@ try {
       spotifyAccess: () => { window.__calls.push(['access']); return '{"ok":true}'; },
       spotifyLink: op => { if(op==='begin')window.__calls.push(['signin']); return JSON.stringify(op==='state'?{phase:'pending',expiresAt:Date.now()+600000}:{ok:true}); }
     };
-    if (!localStorage.getItem('cleanframe.home.v1')) localStorage.setItem('cleanframe.home.v1', JSON.stringify({ layout: 'list', bg: 'photo', wallpaper: 'alpine', language: 'de', apps: 'icons', controls: 'both', home: ['youtube', 'netflix', 'spotify'] }));
+    if (!localStorage.getItem('cleantv.home.v1')) localStorage.setItem('cleantv.home.v1', JSON.stringify({ layout: 'list', bg: 'photo', wallpaper: 'alpine', language: 'de', apps: 'icons', controls: 'both', home: ['youtube', 'netflix', 'spotify'] }));
   });
   await page.goto(preview.baseURL + '/home/');
   await page.waitForFunction(() => ShoreQA.ready());

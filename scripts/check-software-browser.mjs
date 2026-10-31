@@ -13,7 +13,7 @@ try {
  assert.ok((await win(()=>window.CleanFrameEditor.win().document.querySelector('.settings-version-button').textContent)).includes(version));
  assert.equal(await win(()=>window.CleanFrameEditor.win().document.querySelectorAll('.settings-version-button .addon-update-dot').length),1);
  await act('settings.group.software');assert.equal(await win(()=>window.CleanFrameEditor.win().document.querySelector('#appearanceTitle').textContent),'Softwareupdate');
- const preferences=await win(()=>window.CleanFrameEditor.win().localStorage.getItem('cleanframe.home.v1'));
+ const preferences=await win(()=>window.CleanFrameEditor.win().localStorage.getItem('cleantv.home.v1'));
  await win(()=>window.CleanFrameEditor.win().CleanFrameSoftwareMock.set({error:'cancelled',busy:false,pending:{}}));
  assert.match(await win(()=>window.CleanFrameEditor.win().document.querySelector('#appearanceStatus').textContent),/abgebrochen/);
  assert.notEqual(await win(()=>window.CleanFrameEditor.win().document.querySelector('[data-action="software.install"]').getAttribute('aria-disabled')),'true');
@@ -23,7 +23,7 @@ try {
  await act('software.install');await page.waitForFunction(()=>window.CleanFrameEditor.win().CleanFrameSoftwareMock.state().result==='installed');
  assert.equal(await win(()=>window.CleanFrameEditor.win().CleanFrameSoftware.state().current.versionCode),999);
  assert.equal(await win(()=>window.CleanFrameEditor.win().document.querySelectorAll('[data-action="software.install"]').length),0);
- assert.equal(await win(()=>window.CleanFrameEditor.win().localStorage.getItem('cleanframe.home.v1')),preferences);
+ assert.equal(await win(()=>window.CleanFrameEditor.win().localStorage.getItem('cleantv.home.v1')),preferences);
  await mkdir(root+'.local/software/previews',{recursive:true});
  for(const language of ['de','en'])for(const resolution of [720,1080,2160]){
   await page.selectOption('#language',language);await page.selectOption('#resolution',String(resolution));await page.selectOption('#scene','appearance.software');await ready(page);

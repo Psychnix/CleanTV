@@ -3,7 +3,7 @@
   'use strict';
   const boot=window.CleanFrameEditorBoot;
   window.CleanFramePreview=true;
-  localStorage.setItem('cleanframe.home.v1',JSON.stringify(boot.preferences));
+  localStorage.setItem('cleantv.home.v1',JSON.stringify(boot.preferences));
   const apps=boot.tvSource?.apps||[['com.google.android.youtube.tv','YouTube'],['com.netflix.ninja','Netflix'],['com.amazon.amazonvideo.livingroom','Prime Video'],['com.spotify.tv.android','Spotify'],['com.apple.atve.androidtv.appletv','Apple TV'],['tv.twitch.android.app','Twitch'],['com.disney.disneyplus','Disney+']].map(([appId,name])=>({appId,name}));
   let media,scenario=boot.scenario;
   const calls=[];
