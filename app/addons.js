@@ -22,12 +22,20 @@
     'No add-ons for this TV yet': 'Noch keine Add-ons für diesen TV', 'Catalog checked · {total} entries · {compatible} for this TV': 'Katalog geprüft · {total} Einträge · {compatible} für diesen TV',
     'Catalog download failed (no connection, certificate or access policy).': 'Der Katalog konnte nicht geladen werden (keine Verbindung, Zertifikat oder Zugriffsregel).',
     'Catalog download timed out.': 'Das Laden des Katalogs hat zu lange gedauert.', 'Catalog download failed (unexpected address).': 'Der Katalog kam von einer unerwarteten Adresse.',
-    'Catalog could not be read.': 'Der Katalog konnte nicht gelesen werden.', 'Downloads follow in a later update.': 'Downloads folgen in einem späteren Update.',
+    'Catalog could not be read.': 'Der Katalog konnte nicht gelesen werden.',
     'Another add-on operation is running.': 'Ein anderer Add-on Vorgang läuft noch.', 'Package exceeds size limit.': 'Das Paket ist zu groß.',
     'Unsupported catalog API.': 'Nicht unterstützte Katalog API.', 'Catalog is too large.': 'Der Katalog ist zu groß.', 'Duplicate add-on ID.': 'Doppelte Add-on ID.',
     'Unsupported package identity or API.': 'Nicht unterstützte Paketkennung oder API.', 'Unsupported widget kind.': 'Nicht unterstützte Widget Art.',
     'Invalid package metadata.': 'Ungültige Paketangaben.', 'Widget text is too long.': 'Der Widget Text ist zu lang.', 'Unsupported time zone.': 'Nicht unterstützte Zeitzone.',
-    'Invalid package path.': 'Ungültiger Paketpfad.', 'Invalid package checksum.': 'Ungültige Paketprüfsumme.'
+    'Invalid package path.': 'Ungültiger Paketpfad.', 'Invalid package checksum.': 'Ungültige Paketprüfsumme.',
+    'Refresh the catalog before downloading.': 'Aktualisiere vor dem Herunterladen den Katalog.', 'Package checksum mismatch.': 'Die Prüfsumme des Pakets stimmt nicht.',
+    'Package does not match catalog.': 'Das Paket passt nicht zum Katalog.', 'Package could not be read.': 'Das Paket konnte nicht gelesen werden.',
+    'Package download failed (no connection, certificate or access policy).': 'Das Paket konnte nicht geladen werden (keine Verbindung, Zertifikat oder Zugriffsregel).',
+    'Package download timed out.': 'Das Laden des Pakets hat zu lange gedauert.', 'Package download failed (unexpected address).': 'Das Paket kam von einer unerwarteten Adresse.',
+    'An update cannot change the add-on type.': 'Ein Update kann die Art des Add-ons nicht ändern.', 'This add-on is already up to date.': 'Dieses Add-on ist bereits aktuell.',
+    'Add-on is not installed.': 'Das Add-on ist nicht installiert.', 'Could not save add-ons.': 'Die Add-ons konnten nicht gespeichert werden.',
+    'Disable another widget first (maximum three active widgets).': 'Deaktiviere zuerst ein anderes Widget (höchstens drei aktive Widgets).',
+    'Unknown add-on action.': 'Unbekannte Add-on Aktion.'
   };
   function installedVersion(item, runtime) {
     var result = {}, actual = runtime && runtime[item.id];
@@ -50,9 +58,11 @@
     return value.catalog.filter(function (item) { var current = value.installed[item.id]; return current && newer(item, installedVersion(current, value.runtime)); });
   }
   window.CleanFrameAddons = {
-    text: function (language, value) {
-      var http = language === 'de' && /^Catalog download failed \(HTTP ([0-9]{3})\)\.$/.exec(value);
-      if (http) return 'Der Katalog konnte nicht geladen werden (HTTP ' + http[1] + ').';
+    text: function text(language, value) {
+      var http = language === 'de' && /^(Catalog|Package) download failed \(HTTP ([0-9]{3})\)\.$/.exec(value);
+      var stopped = language === 'de' && /^Update stopped: ([\s\S]+)$/.exec(value);
+      if (http) return (http[1] === 'Catalog' ? 'Der Katalog' : 'Das Paket') + ' konnte nicht geladen werden (HTTP ' + http[2] + ').';
+      if (stopped) return 'Aktualisierung abgebrochen: ' + text(language, stopped[1]);
       return language === 'de' && de[value] ? de[value] : window.CleanFrameI18n.text(language, value);
     },
     state: read, newer: newer, installedVersion: installedVersion, updates: function (value) { return updates(value || state); },
@@ -67,7 +77,8 @@
       root.hidden = !visible;
       if (!visible) return;
       while (root.firstChild) root.removeChild(root.firstChild);
-      Object.keys(state.installed).filter(function (id) { var p = state.installed[id]; return p.enabled !== false && p.kind !== 'spotify' && p.kind !== 'native'; }).slice(0, 3).forEach(function (id) {
+      // Only text and clock packages are host cards here; other kinds render through their host modules.
+      Object.keys(state.installed).filter(function (id) { var p = state.installed[id]; return p.enabled !== false && (p.kind === 'text' || p.kind === 'clock'); }).slice(0, 3).forEach(function (id) {
         var item = state.installed[id], card = document.createElement('section'), title = document.createElement('h3'), body = document.createElement('p');
         card.className = 'addon-widget'; card.setAttribute('data-addon', id); title.textContent = item.name;
         body.textContent = item.kind === 'clock' ? new Date().toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit', timeZone: item.timeZone || undefined }) : item.text || '';
