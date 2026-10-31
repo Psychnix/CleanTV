@@ -14,7 +14,7 @@
   var spotifyState = { status: 'idle' }, spotifyAt = 0, spotifyTimer = 0, spotifyObserving = null;
   var spotifyCommands = ['previous', 'toggle', 'next'];
   var spotifyAwake = false, spotifyIdleTimer = 0;
-  var HOME_OPTIONS = ['dateVisible', 'spotifyEnabled', 'spotifySurface', 'spotifyTransparency', 'controlsPosition', 'language'];
+  var HOME_OPTIONS = ['clockFormat', 'dateVisible', 'spotifyEnabled', 'spotifySurface', 'spotifyTransparency', 'controlsPosition', 'language'];
   var ORIGINAL_HOME = ANDROID ? 'Original Home' : 'Samsung Home';
   var DEVICE_LABEL = ANDROID ? 'Android TV' : 'Samsung';
 
@@ -65,7 +65,7 @@
   var PRIVATE_FONTS = OLD ? [] : window.CleanFramePrivateFontIDs || [], fontMetrics = {}, unavailableFonts = {}, widthCache = {}, fontRevision = 0, fontsReady = false;
   var LOOK_VALUES = { bg: ['dark', 'light', 'photo'], layout: ['list', 'dock'], apps: ['icons', 'both', 'text'], font: Object.keys(FONTS).filter(function (id) { return id === 'manrope' || PRIVATE_FONTS.indexOf(id) >= 0; }), controls: ['icons', 'both', 'text'], focus: ['type', 'glass'], material: OLD ? ['soft', 'frost'] : ['soft', 'frost', 'tint'] };
   var LOOK_NAMES = { bg: 'Background', layout: 'Layout', apps: 'Apps', font: 'Font', controls: 'Home controls', focus: 'Focus', material: 'Material' };
-  var VALUE_NAMES = { dark: 'Dark', light: 'Light', cover: 'Cover colour', photo: 'Photo', list: 'List', dock: 'Dock', type: 'Type', glass: 'Glass', soft: 'Soft', frost: 'Frost', tint: 'Clear tint', icons: 'Icons', both: 'Icons and text', text: 'Text', auto: 'Automatic', top: 'Top right', bottom: 'Bottom right', de: 'Deutsch', en: 'English' };
+  var VALUE_NAMES = { dark: 'Dark', light: 'Light', cover: 'Cover colour', photo: 'Photo', list: 'List', dock: 'Dock', type: 'Type', glass: 'Glass', soft: 'Soft', frost: 'Frost', tint: 'Clear tint', icons: 'Icons', both: 'Icons and text', text: 'Text', auto: 'Automatic', top: 'Top right', bottom: 'Bottom right', de: 'Deutsch', en: 'English', '12h': '12-hour', '24h': '24-hour' };
   var UTIL = { art: ['Art Mode', 'art'], apps: ['All apps', 'apps'], arrange: ['Arrange', 'arrange'], settings: ['Settings', 'settings'] };
   var MSG = {
     leave: { title: 'Leave Home?', line: 'Open ' + ORIGINAL_HOME + '?', note: '', actions: [['stay', 'Stay'], ['samsung', ORIGINAL_HOME]] }
@@ -386,6 +386,7 @@
       font: pick(modern.font, LOOK_VALUES.font, 'manrope'), wall: wall(modern.wall || s.wallpaper) ? modern.wall || s.wallpaper : WALLS[0].id,
       home: h, recent: recent, lastApp: h.indexOf(s.lastApp) >= 0 ? s.lastApp : h[0],
       mode: pick(s.mode, MODES.map(function (m) { return m.id; }), 'fixed'),
+      clockFormat: pick(s.clockFormat, ['12h', '24h'], '12h'),
       dateVisible: s.dateVisible !== false, spotifyEnabled: s.spotifyEnabled !== false,
       spotifySurface: pick(s.spotifySurface, ['dark', 'light', 'cover'], 'dark'),
       spotifyTransparency: typeof s.spotifyTransparency === 'number' && isFinite(s.spotifyTransparency) ? clamp(Math.round(s.spotifyTransparency / 5) * 5, 0, 100) : 60,
@@ -551,7 +552,7 @@
   function addAppsRoute() { openEditor('home'); }
   function openSettings() { push({ id: 'settings', f: { id: S.settingsFocus } }); }
   function openAppearance(group) {
-    var axis = { background: 'bg', layout: 'layout', typography: 'font', focus: 'focus', clock: 'dateVisible', spotify: 'spotifyEnabled', language: 'language' }[group];
+    var axis = { background: 'bg', layout: 'layout', typography: 'font', focus: 'focus', clock: 'clockFormat', spotify: 'spotifyEnabled', language: 'language' }[group];
     var action = S.detailFocus[group] || (axis ? 'choice.' + axis + '.' + S.c[axis] : group === 'rotation' ? 'rotation.' + S.c.mode : 'samsung.home');
     push({ id: 'appearance', group: group, f: { action: action } });
   }
@@ -936,7 +937,10 @@
     ] }];
     if (t.group === 'addons' || t.group === 'addon-detail') return addonSections(t);
     if (t.group === 'language') return [{ id: 'language', title: translate('Language'), horizontal: true, items: options('language', ['de', 'en']) }];
-    if (t.group === 'clock') return [{ id: 'dateVisible', title: translate('Show date'), horizontal: true, items: options('dateVisible', [true, false]), reason: translate('Date below the clock, using the TV time zone.') }];
+    if (t.group === 'clock') return [
+      { id: 'clockFormat', title: translate('Time format'), horizontal: true, items: options('clockFormat', ['12h', '24h']) },
+      { id: 'dateVisible', title: translate('Show date'), horizontal: true, items: options('dateVisible', [true, false]), reason: translate('Date below the clock, using the TV time zone.') }
+    ];
     if (t.group === 'spotify') return [
       { id: 'spotifyEnabled', title: translate('Player on Home'), horizontal: true, items: options('spotifyEnabled', [true, false]) },
       { id: 'spotifySurface', title: translate('Player background'), horizontal: true, items: options('spotifySurface', ['dark', 'light', 'cover']) },
@@ -1126,7 +1130,7 @@
   V.appearance = {
     norm: function (t) {
       var rows = detailRows(t), exists = false, applied = null;
-      var axis = { background: 'bg', layout: 'layout', typography: 'font', focus: 'focus', rotation: 'mode', clock: 'dateVisible', spotify: 'spotifyEnabled', language: 'language' }[t.group];
+      var axis = { background: 'bg', layout: 'layout', typography: 'font', focus: 'focus', rotation: 'mode', clock: 'clockFormat', spotify: 'spotifyEnabled', language: 'language' }[t.group];
       rows.forEach(function (items) { items.forEach(function (item) {
         if (item.action === t.f.action) exists = true;
         if (item.axis === axis && item.value === S.c[axis]) applied = item;
@@ -1280,7 +1284,7 @@
   }
 
   function clockText() {
-    var d = new Date(), h = d.getHours() % 12 || 12, m = d.getMinutes();
+    var d = new Date(), h = S.c.clockFormat === '24h' ? d.getHours() : d.getHours() % 12 || 12, m = d.getMinutes();
     return h + ':' + (m < 10 ? '0' : '') + m;
   }
   function clockHtml() {

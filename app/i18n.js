@@ -43,6 +43,7 @@
     'Typography': 'Schriftbild', 'Clock and date': 'Uhr und Datum', 'Time and date': 'Uhrzeit und Datum', 'Time only': 'Nur Uhrzeit',
     'Player on Home': 'Player auf Home', 'Player hidden': 'Player ausgeblendet', 'Language': 'Sprache',
     'Home and TV settings': 'Startbildschirm und TV Einstellungen', 'Rotation': 'Bildwechsel', 'Show date': 'Datum anzeigen',
+    'Time format': 'Uhrzeitformat', '12-hour': '12 Stunden', '24-hour': '24 Stunden',
     'Date below the clock, using the TV time zone.': 'Datum unter der Uhr, in der Zeitzone des Fernsehers.',
     'On': 'An', 'Off': 'Aus', 'Player background': 'Player Hintergrund', 'Transparency': 'Transparenz',
     'Account': 'Konto', 'Sign in with QR': 'Mit QR anmelden', 'Sign out': 'Abmelden', 'Account connected': 'Konto verbunden',

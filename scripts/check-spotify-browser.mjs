@@ -66,6 +66,26 @@ try {
   await group('clock'); await act('choice.dateVisible.true'); await scene('home');
   pass('Date preference survives appearance changes, app editing and reload.');
 
+  const clockText = async () => (await page.locator('#caption .clock').textContent()).trim();
+  await page.clock.setSystemTime(new Date('2026-11-01T20:05:10Z'));
+  await scene('home');
+  assert.equal((await state()).clockFormat, '12h');
+  assert.equal(await clockText(), '9:05');
+  await group('clock'); await act('choice.clockFormat.24h'); await scene('home');
+  assert.equal(await clockText(), '21:05');
+  await page.reload(); await page.waitForFunction(() => ShoreQA.ready());
+  assert.equal((await state()).clockFormat, '24h');
+  assert.equal(await clockText(), '21:05');
+  await group('clock');
+  assert.equal((await state()).focusAction, 'choice.clockFormat.24h');
+  await scene('home');
+  await page.clock.setSystemTime(new Date('2026-11-01T23:00:10Z'));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  assert.equal(await clockText(), '0:00');
+  await group('clock'); await act('choice.clockFormat.12h'); await scene('home');
+  assert.equal(await clockText(), '12:00');
+  pass('Clock keeps the 12-hour default; the 24-hour choice applies at once, survives reload and shows midnight as 0:00.');
+
   await page.keyboard.press('ArrowDown');
   assert.equal((await state()).focusAction, 'spotify.toggle');
   await page.evaluate(() => { window.__button = document.querySelector('[data-action="spotify.toggle"]'); });
