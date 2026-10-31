@@ -2,6 +2,12 @@
 (function () {
   'use strict';
   var ANDROID = window.FrameDevice && window.FrameDevice.platform === 'android';
+  /* Engines without custom properties (2017 Tizen 3.0 TVs) receive the values through legacy.js.
+     OLD is such an engine itself, not the resolver forced on a modern one for checks: it also lacks
+     variable fonts and size-adjust and has an older compositor, so it gets fewer Home options. */
+  var LEGACY = window.CleanFrameLegacy && window.CleanFrameLegacy.active ? window.CleanFrameLegacy : null;
+  var OLD = !!LEGACY && !(window.CSS && window.CSS.supports && window.CSS.supports('--a', '0'));
+  var CAPS = window.FrameDevice && window.FrameDevice.capabilities || {};
   var ADDONS = window.CleanFrameAddons;
   var SETUP = window.CleanFrameAddonSetup;
   var SPOTIFY = !!(ANDROID && FrameDevice.capabilities.spotify);
@@ -34,9 +40,11 @@
     { id: 'sbs', name: 'SBS On Demand', mark: true, appId: 'OyE7OuxlUi.SBSOnDemand' },
     { id: 'applemusic', name: 'Apple Music', mark: true, appId: 'org.tizen.apple.apple-music' }
   ];
+  if (!ANDROID && FrameDevice.appId) PRIMARY_APPS.forEach(function (a) { a.appId = FrameDevice.appId(a.id) || a.appId; });
   var PRIMARY = PRIMARY_APPS.map(function (a) { return a.id; }), APPS = PRIMARY_APPS.slice(), ALPHA = [];
   var WALLS = window.CleanFrameWallpapers || [{ id: 'misty', name: 'Misty coast', tone: 'light', ut: { tr: 'mist', br: 'mist' }, frostVeil: .20 }];
-  var ADAPTIVE_INK = window.CleanFrameAdaptiveInk || {};
+  // Old engines keep the curated ink classes instead of per-wallpaper ink variables.
+  var ADAPTIVE_INK = OLD ? {} : window.CleanFrameAdaptiveInk || {};
   WALLS.forEach(function (w) { w.ut = w.ut || { tr: 'light', br: 'light' }; w.frostVeil = w.frostVeil || .12; });
   var MODES = [
     { id: 'fixed', name: 'Fixed', min: 0 }, { id: 'open', name: 'Each time Home opens', min: 0 },
@@ -53,8 +61,9 @@
     geist: { name: 'Geist', family: 'Study Geist', display: 300, ui: 400, clock: 300 },
     newsreader: { name: 'Newsreader', family: 'Study Newsreader', display: 400, ui: 400, clock: 400 }
   };
-  var PRIVATE_FONTS = window.CleanFramePrivateFontIDs || [], fontMetrics = {}, unavailableFonts = {}, widthCache = {}, fontRevision = 0, fontsReady = false;
-  var LOOK_VALUES = { bg: ['dark', 'light', 'photo'], layout: ['list', 'dock'], apps: ['icons', 'both', 'text'], font: Object.keys(FONTS).filter(function (id) { return id === 'manrope' || PRIVATE_FONTS.indexOf(id) >= 0; }), controls: ['icons', 'both', 'text'], focus: ['type', 'glass'], material: ['soft', 'frost', 'tint'] };
+  // Without size-adjust and metric overrides only Manrope keeps the metrics the layout is set for.
+  var PRIVATE_FONTS = OLD ? [] : window.CleanFramePrivateFontIDs || [], fontMetrics = {}, unavailableFonts = {}, widthCache = {}, fontRevision = 0, fontsReady = false;
+  var LOOK_VALUES = { bg: ['dark', 'light', 'photo'], layout: ['list', 'dock'], apps: ['icons', 'both', 'text'], font: Object.keys(FONTS).filter(function (id) { return id === 'manrope' || PRIVATE_FONTS.indexOf(id) >= 0; }), controls: ['icons', 'both', 'text'], focus: ['type', 'glass'], material: OLD ? ['soft', 'frost'] : ['soft', 'frost', 'tint'] };
   var LOOK_NAMES = { bg: 'Background', layout: 'Layout', apps: 'Apps', font: 'Font', controls: 'Home controls', focus: 'Focus', material: 'Material' };
   var VALUE_NAMES = { dark: 'Dark', light: 'Light', cover: 'Cover colour', photo: 'Photo', list: 'List', dock: 'Dock', type: 'Type', glass: 'Glass', soft: 'Soft', frost: 'Frost', tint: 'Clear tint', icons: 'Icons', both: 'Icons and text', text: 'Text', auto: 'Automatic', top: 'Top right', bottom: 'Bottom right', de: 'Deutsch', en: 'English' };
   var UTIL = { art: ['Art Mode', 'art'], apps: ['All apps', 'apps'], arrange: ['Arrange', 'arrange'], settings: ['Settings', 'settings'] };
@@ -118,6 +127,9 @@
   function push(e) { S.stack.push(e); return e; }
   function pop() { if (S.stack.length > 1) { if (top().group === 'spotify-link') SETUP.close(); S.stack.pop(); } }
   function px(n) { return n.toFixed(2) + 'px'; }
+  function setVar(el, name, value) { el.style.setProperty(name, value); if (LEGACY) LEGACY.setVar(el, name, value); }
+  function removeVar(el, name) { el.style.removeProperty(name); if (LEGACY) LEGACY.removeVar(el, name); }
+  function resolveVars() { if (LEGACY) LEGACY.apply(); }
   function icon(name, cls, underlay) {
     return '<svg class="ico' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true">'
       + (underlay ? '<g class="ut-underlay" transform="translate(0 .5)">' + SVG[name] + '</g><g class="ut-ink">' + SVG[name] + '</g>' : SVG[name]) + '</svg>';
@@ -160,10 +172,16 @@
   }
   function smallMark(a) { return appMark(a, 56, 44, 36); }
   var measureCanvas = document.createElement('canvas'), measureContext = measureCanvas.getContext('2d'), measureSpan = document.createElement('span');
+  var TABULAR = 'fontVariantNumeric' in measureSpan.style;
   measureSpan.setAttribute('aria-hidden', 'true');
   measureSpan.style.cssText = 'position:absolute;left:-10000px;top:0;visibility:hidden;white-space:pre;font-synthesis:none;';
   document.body.appendChild(measureSpan);
   function homeFont() { return S.shown && S.shown.font || 'manrope'; }
+  // Chromium 47 has only the feature setting; measure the tabular digits the clock renders.
+  function numerals(tabular) {
+    measureSpan.style.fontVariantNumeric = tabular ? 'tabular-nums' : 'normal';
+    if (!TABULAR) measureSpan.style.webkitFontFeatureSettings = tabular ? '"tnum"' : 'normal';
+  }
   function fontRole(id, role, size) {
     var f = FONTS[id], serif = id === 'newsreader';
     return { family: f.family,
@@ -188,7 +206,7 @@
     if (face) face.variationSettings = original;
     r = fontRole(id, 'clock');
     measureSpan.style.font = r.weight + ' 48px/64px "' + r.family + '"';
-    measureSpan.style.letterSpacing = '0'; measureSpan.style.fontVariantNumeric = 'tabular-nums';
+    measureSpan.style.letterSpacing = '0'; numerals(true);
     measureSpan.style.fontVariationSettings = r.opsz ? '"opsz" ' + r.opsz : 'normal';
     widths = '0123456789'.split('').map(function (n) { measureSpan.textContent = n; return measureSpan.getBoundingClientRect().width; });
     min = Math.min.apply(Math, widths); max = Math.max.apply(Math, widths);
@@ -239,13 +257,16 @@
   var baselineRecovery = false;
   function ensureFont(id, done) {
     loadFont('manrope', function (ok, reason) {
+      var ready;
       if (!ok && id === 'manrope') {
         // The local fallback keeps Home usable if the baseline face is slow or missing.
         fontMetrics.manrope = measureFace('manrope', []); fontMetrics.manrope.fallback = true; fontsReady = true;
         done(true, reason);
-        if (!baselineRecovery && document.fonts && document.fonts.ready) {
+        // Early FontFaceSet drafts exposed ready() as a method.
+        ready = document.fonts && (typeof document.fonts.ready === 'function' ? document.fonts.ready() : document.fonts.ready);
+        if (!baselineRecovery && ready && typeof ready.then === 'function') {
           baselineRecovery = true;
-          document.fonts.ready.then(function () {
+          ready.then(function () {
             delete fontMetrics.manrope; delete unavailableFonts.manrope;
             loadFont('manrope', function (loaded) {
               if (!loaded) { fontMetrics.manrope = measureFace('manrope', []); fontMetrics.manrope.fallback = true; fontsReady = true; }
@@ -272,7 +293,7 @@
     if (r.opsz) {
       measureSpan.style.font = weight + ' ' + size + 'px "' + r.family + '"';
       measureSpan.style.fontVariationSettings = '"opsz" ' + r.opsz;
-      measureSpan.style.fontVariantNumeric = 'normal'; measureSpan.style.letterSpacing = '0'; measureSpan.textContent = text;
+      numerals(false); measureSpan.style.letterSpacing = '0'; measureSpan.textContent = text;
       width = measureSpan.getBoundingClientRect().width;
     } else {
       measureContext.font = (weight || 500) + ' ' + size + 'px "' + r.family + '", Arial, sans-serif';
@@ -354,6 +375,8 @@
       if (!app(id) && id.indexOf('.') > 0) APPS.push({ id: id, appId: id, name: id.split('.').pop(), mark: false });
       if (app(id)) h.push(id);
     });
+    // On an older TV a first run starts with the reference apps it reports as installed.
+    if (!h.length) h = PRIMARY.filter(function (id) { return !FrameDevice.has || FrameDevice.has(app(id).appId) !== false; });
     if (!h.length) h = PRIMARY.slice();
     (Array.isArray(s.recent) ? s.recent : []).forEach(function (id) { if (safeId(id) && app(id) && h.indexOf(id) < 0 && recent.indexOf(id) < 0 && recent.length < 5) recent.push(id); });
     return {
@@ -512,7 +535,7 @@
   }
 
   /* ---------- Navigation targets ---------- */
-  function utils() { return ANDROID ? ['apps', 'settings'] : ['art', 'apps', 'settings']; }
+  function utils() { return ANDROID || CAPS.art === false ? ['apps', 'settings'] : ['art', 'apps', 'settings']; }
   function utilsTop() { return S.c.controlsPosition === 'top' || S.c.controlsPosition === 'auto' && S.c.layout === 'dock' && !spotifyVisible(); }
   function utilsStacked() { return S.c.controlsPosition !== 'auto' || S.c.layout === 'list' || spotifyVisible(); }
   /* prev/next run along the apps; out goes to the controls, inn comes back (or to a per-app action). */
@@ -533,6 +556,7 @@
     push({ id: 'appearance', group: group, f: { action: action } });
   }
   function openMessage(key) { push({ id: 'message', msg: key, f: { b: 0 } }); }
+  function leave() { if (CAPS.home !== false) openMessage('leave'); }
   function openApps() {
     var e = { id: 'apps', mode: 'browse', top: 0, f: { zone: 'grid', i: Math.max(0, ALPHA.indexOf(S.appsFocus)), h: 0 } };
     push(e); refreshCatalog(); return e;
@@ -582,7 +606,7 @@
       f.zone = 'apps';
       if (k === x.out) { f.zone = 'util'; f.u = clamp(S.lastUtil, 0, U.length - 1); }
       else if (k === 'down' && spotifyVisible()) { f.zone = 'spotify'; f.p = 1; }
-      else if (k === 'back') openMessage('leave');
+      else if (k === 'back') leave();
       else if (!h.length) { if (k === 'ok') addAppsRoute(); }
       else if (k === x.prev && i > 0) setSel(h[i - 1]);
       else if (k === x.next && i < h.length - 1) setSel(h[i + 1]);
@@ -614,7 +638,7 @@
     else if (k === 'down' && i === h.length - 1 && spotifyVisible()) { f.zone = 'spotify'; f.p = 1; }
     else if (k === 'right') { f.zone = 'util'; f.u = clamp(S.lastUtil, 0, U.length - 1); }
     else if (k === 'down' && i < h.length - 1) setSel(h[i + 1]);
-    else if (k === 'back') openMessage('leave');
+    else if (k === 'back') leave();
     else if (k === 'ok') { if (h.length) launch(S.sel); else addAppsRoute(); }
   }
 
@@ -863,7 +887,7 @@
       { id: 'clock', label: 'Clock and date', value: S.c.dateVisible ? 'Time and date' : 'Time only' },
       { id: 'language', label: 'Language', value: S.c.language === 'de' ? 'Deutsch' : 'English' },
       { id: 'samsung', label: DEVICE_LABEL, value: 'Home and TV settings' }
-    ];
+    ].filter(function (r) { return r.id !== 'samsung' || CAPS.home !== false || CAPS.settings !== false; });
     return [
       { id: 'display', label: 'Display', value: translate(VALUE_NAMES[S.c.bg]) + ' · ' + FONTS[S.c.font].name },
       { id: 'homescreen', label: 'Home screen', value: translate(VALUE_NAMES[S.c.layout]) + ' · ' + S.c.home.length + ' apps' },
@@ -940,15 +964,15 @@
     if (t.group === 'typography') return [{ id: 'font', title: '', items: options('font', LOOK_VALUES.font) }];
     if (t.group === 'focus') return [
       { id: 'focus', title: translate('Focus style'), horizontal: true, items: options('focus', ['type', 'glass']) },
-      { id: 'material', title: translate('Material'), horizontal: true, items: options('material', ['soft', 'frost', 'tint'], inactive),
+      { id: 'material', title: translate('Material'), horizontal: true, items: options('material', LOOK_VALUES.material, inactive),
         reason: inactive ? flat ? translate('Materials are available with a Photo background.') : translate('Choose Glass focus or the Dock layout to use materials.') : '' }
     ];
     if (t.group === 'rotation') return [{ id: 'mode', title: '', items: options('mode', MODES.map(function (m) { return m.id; }), flat),
       reason: flat ? translate('Choose Photo in Background to use rotation.') : translate('Timed changes pause while Settings or another panel is open.') }];
     return [{ id: 'samsung', title: '', items: [
-      { action: 'samsung.home', label: ORIGINAL_HOME, description: ANDROID ? translate('Open original Home or its activation settings') : translate('Open Samsung’s Home screen') },
-      { action: 'samsung.settings', label: translate('TV settings'), description: translate('Picture, sound and network settings') }
-    ] }];
+      { action: 'samsung.home', cap: 'home', label: ORIGINAL_HOME, description: ANDROID ? translate('Open original Home or its activation settings') : translate('Open Samsung’s Home screen') },
+      { action: 'samsung.settings', cap: 'settings', label: translate('TV settings'), description: translate('Picture, sound and network settings') }
+    ].filter(function (item) { return CAPS[item.cap] !== false; }) }];
   }
   function addonText(value) { return ADDONS.text(S.c.language, value); }
   function addonItem(id, state) {
@@ -1189,12 +1213,12 @@
       var values = r ? { ink: r.ink, 'clock-ink': r.clockInk || r.ink, 'rest-ink': r.restInk, 'peer-ink': r.peerInk, rest: r.restAlpha, peer: r.peerAlpha, under: r.halo, shadow: r.shadow } : {};
       ['ink', 'clock-ink', 'rest-ink', 'peer-ink', 'rest', 'peer', 'under', 'shadow'].forEach(function (key) {
         var name = '--' + zone + '-' + key, value = values[key];
-        if (value !== undefined && value !== null) stage.style.setProperty(name, String(value));
-        else stage.style.removeProperty(name);
+        if (value !== undefined && value !== null) setVar(stage, name, String(value));
+        else removeVar(stage, name);
       });
     });
-    if (active && palette.light) stage.style.setProperty('--home-app-ink', palette.light);
-    else stage.style.removeProperty('--home-app-ink');
+    if (active && palette.light) setVar(stage, '--home-app-ink', palette.light);
+    else removeVar(stage, '--home-app-ink');
     return !!active;
   }
   function inkRungClasses(palette, active) {
@@ -1213,11 +1237,12 @@
     var adaptive = applyAdaptiveInk(palette), tr = adaptive && palette.tr ? palette.tr.pol : shown.ut.tr, br = adaptive && palette.br ? palette.br.pol : shown.ut.br;
     stage.className = (ANDROID ? 'stage is-android bg-' : 'stage bg-') + S.c.bg + ' l-' + S.c.layout + ' v-' + S.variant + ' m-' + (materialApplies() ? S.c.material : 'none') + ' f-' + S.c.focus + ' a-' + S.c.apps + ' u-' + S.c.controls + ' g-' + S.geom + ' tone-' + shown.tone + ' tr-' + tr + ' br-' + br + wallClasses(shown) + inkRungClasses(palette, adaptive) + ' at-' + t.id + ' font-' + homeFont() + (homeFont() !== 'manrope' ? ' font-custom' : '') + (S.fontSwitch ? ' is-font-switch' : '') + (adaptive ? ' has-adaptive-ink adaptive-tl-' + palette.tl.pol : '') + (!adaptive && shown.clockInk ? ' has-clock-ink' : '') + (!adaptive && shown.dockClockInk ? ' has-dock-clock-ink' : '') + (registeredMaterial(shown.id) ? ' registered-material' : '') + (sheet ? ' is-sheet' : '') + (S.reflow ? ' is-reflow' : '') + (spotifyVisible() ? ' has-spotify' : '') + (spotifyExpanded() ? ' spotify-focused' : '') + ' cp-' + S.c.controlsPosition + (utilsStacked() ? ' util-stacked' : '') + (utilsTop() ? ' util-at-top' : ' util-at-bottom');
     if (t.id === 'appearance' && (t.group === 'addons' || t.group === 'addon-detail' || t.group === 'remote' || t.group === 'spotify-link')) stage.className += ' is-addon-manager';
-    if (!adaptive && shown.clockInk) stage.style.setProperty('--clock-ink', shown.clockInk);
-    else stage.style.removeProperty('--clock-ink');
-    if (!adaptive && shown.dockClockInk) stage.style.setProperty('--dock-clock-ink', shown.dockClockInk);
-    else stage.style.removeProperty('--dock-clock-ink');
+    if (!adaptive && shown.clockInk) setVar(stage, '--clock-ink', shown.clockInk);
+    else removeVar(stage, '--clock-ink');
+    if (!adaptive && shown.dockClockInk) setVar(stage, '--dock-clock-ink', shown.dockClockInk);
+    else removeVar(stage, '--dock-clock-ink');
     applyHomeFont();
+    resolveVars();
     if (!sheet) renderHome(t);
     renderSheet(t, sheet);
     renderAppearance(t);
@@ -1225,6 +1250,7 @@
     renderSpotify();
     ADDONS.render(t.id === 'home' && !spotifyExpanded(), S.c.language);
     syncSpotify();
+    resolveVars();
     if (window.CleanFrameDesign) window.CleanFrameDesign.after({ view: t.id === 'appearance' ? 'appearance.' + t.group : t.id === 'message' ? 'message.' + t.msg : t.id, layout: S.c.layout, state: spotifyExpanded() ? 'expanded' : 'compact' });
   }
 
@@ -1234,7 +1260,7 @@
     appliedFont = id; appliedFontMetrics = metrics;
     var values = { 'display-family': '"' + f.family + '"', 'ui-family': '"' + ui.family + '"', 'primary-family': '"' + primary.family + '"', 'display-weight': f.display, 'ui-weight': ui.weight, 'primary-weight': primary.weight, 'clock-weight': f.clock,
       'clock-shift': px(fontShift('clock', 48)), 'utility-shift': px(fontShift('ui', 28)), 'action-shift': px(fontShift('ui', 30)), 'heading-shift': px(fontShift('ui', 48)), 'full-name-shift': px(fontShift('primary', 30)), 'clock-digit': px(metrics ? metrics.digitCell : 0) };
-    Object.keys(values).forEach(function (key) { homeEl.style.setProperty('--font-' + key, String(values[key])); });
+    Object.keys(values).forEach(function (key) { setVar(homeEl, '--font-' + key, String(values[key])); });
   }
 
   function homeState(t) {
@@ -1269,9 +1295,10 @@
   };
   function dateText() {
     var d = new Date(), de = S.c.language === 'de', formatter = null, names;
-    try { formatter = new window.Intl.DateTimeFormat(de ? 'de-DE' : 'en-GB', { weekday: 'short', day: 'numeric', month: 'long' }); } catch (e) { formatter = null; }
+    // Without formatToParts the engine's locale data can differ as well, so English uses the names too.
+    try { if (typeof window.Intl.DateTimeFormat.prototype.formatToParts === 'function') formatter = new window.Intl.DateTimeFormat(de ? 'de-DE' : 'en-GB', { weekday: 'short', day: 'numeric', month: 'long' }); } catch (e) { formatter = null; }
     if (formatter && !de) return formatter.format(d);
-    if (formatter && typeof formatter.formatToParts === 'function') return formatter.formatToParts(d).filter(function (part) { return part.type !== 'literal'; }).map(function (part) {
+    if (formatter) return formatter.formatToParts(d).filter(function (part) { return part.type !== 'literal'; }).map(function (part) {
       return part.value + (part.type === 'day' ? '.' : '');
     }).join(' ');
     names = DATE_NAMES[de ? 'de' : 'en'];
@@ -1348,8 +1375,9 @@
     var surface = S.c.spotifySurface, colour = /^#[0-9a-f]{6}$/i.test(spotifyState.artColor || '') ? spotifyState.artColor : '#272727';
     var backdrop = wall(S.shown ? S.shown.wall : S.c.wall), palette = ADAPTIVE_INK[backdrop.id];
     var backdropInk = palette && palette.br ? palette.br.pol : backdrop.ut.br;
-    spotifyEl.style.setProperty('--spotify-surface', surface === 'light' ? '#f4f4f1' : surface === 'cover' ? colour : '#131209');
-    spotifyEl.style.setProperty('--spotify-opacity', String(1 - S.c.spotifyTransparency / 100));
+    setVar(spotifyEl, '--spotify-surface', surface === 'light' ? '#f4f4f1' : surface === 'cover' ? colour : '#131209');
+    setVar(spotifyEl, '--spotify-opacity', String(1 - S.c.spotifyTransparency / 100));
+    resolveVars();
     // Opaque cards use their surface ink; transparent cards reuse the prepared backdrop ink.
     spotifyEl.classList.toggle('is-light', S.c.spotifyTransparency <= 40 ? surface === 'light' || surface === 'cover' && spotifyState.artLight : S.c.bg === 'light' || S.c.bg === 'photo' && /^dark/.test(backdropInk));
     spotifyEl.style.textShadow = S.c.bg === 'photo' && palette && palette.br ? palette.br.shadow : 'none';
@@ -1541,8 +1569,10 @@
 
     dock.className = 'dock' + (empty ? ' is-empty' : '');
     dock.style.left = g.x + 'px'; dock.style.top = g.y + 'px'; dock.style.width = g.w + 'px'; dock.style.height = g.h + 'px';
-    dock.style.setProperty('--tile-w', g.tw + 'px'); dock.style.setProperty('--tile-h', g.th + 'px'); dock.style.setProperty('--dock-h', g.h + 'px');
-    dock.style.setProperty('--nudge-top', ((g.th - 48) / 2) + 'px');
+    setVar(dock, '--tile-w', g.tw + 'px'); setVar(dock, '--tile-h', g.th + 'px'); setVar(dock, '--dock-h', g.h + 'px');
+    setVar(dock, '--nudge-top', ((g.th - 48) / 2) + 'px');
+    // syncDockEdges below measures tiles at the new size.
+    resolveVars();
     dockAnchorCenter = g.x + 16 + anchor * g.pitch - off + g.tw / 2;
     var materialY = g.y - (spotifyExpanded() ? 216 : 0);
     IMG.mat.style.left = (-g.x) + 'px'; IMG.mat.style.top = (-materialY) + 'px';
@@ -1634,7 +1664,8 @@
   function fieldTransform(el, x, y, width, height) {
     el._placement = { x: x, y: y, width: width, height: height };
     el.style.transformOrigin = (x + width / 2) + 'px ' + (y + height / 2) + 'px';
-    el.style.transform = 'translate3d(' + (-x) + 'px,' + (-y) + 'px,0)' + (S.c.bg === 'photo' && S.c.material === 'tint' && !REDUCED_MOTION ? ' scale(1.04)' : '');
+    // Old compositors showed a square 3D field layer behind the rounded lens (upstream PR #11).
+    el.style.transform = (OLD ? 'translate(' + (-x) + 'px,' + (-y) + 'px)' : 'translate3d(' + (-x) + 'px,' + (-y) + 'px,0)') + (S.c.bg === 'photo' && S.c.material === 'tint' && !REDUCED_MOTION ? ' scale(1.04)' : '');
   }
   function renderList(hs) {
     var items = hs.items, n = items.length, compact = hs.mode === 'arrange', pitch = compact ? PH_COMPACT_PITCH : PH_PITCH;

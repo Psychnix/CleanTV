@@ -2,6 +2,8 @@
 
 Updated 28 October 2026. App rendering and native Home reassignment need separate evidence. Tizen version alone does not establish support. The source manifest requires Tizen 6.5; older adapted builds do not change that requirement.
 
+**`tizen3` branch:** this private branch targets a 2017 UE40MU6179 (Tizen 3.0, Chromium 47 engine) as a manually opened app, without native Home changes. Its package is built with `npm run package -- --required-version 3.0`; the source manifest keeps 6.5. Only on engines without CSS custom properties, `legacy.js` resolves the stylesheet and registers static Manrope weights, and Home offers Manrope only, no Clear tint and no adaptive ink. On those engines the Tizen adapter also prefers installed alternative app and system-screen IDs, shows Art Mode only with the art app on a Frame model, and hides CleanFrame when no Samsung Home target opens. Newer engines are unchanged. All of this is pending device verification. Browser checks do not establish that the package installs, renders or launches apps on that TV.
+
 ## Recorded results
 
 | TV / platform | Web launcher | Native Home | Evidence |
