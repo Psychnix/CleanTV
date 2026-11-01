@@ -11,7 +11,7 @@ const IDS = ['IkWsFHtOY9.Stremio', 'org.tizen.netflix-app', 'MCmYXNxgcu.DisneyPl
 const NAMES = ['Stremio', 'Netflix', 'Disney+', 'YouTube', 'Apple TV', 'Prime Video', 'ABC iview', 'SBS On Demand', 'Apple Music'];
 const CATALOG = IDS.map((id, i) => ({ id, name: NAMES[i], show: true, iconPath: '' })).concat([{ id: 'AbCdEf1234.FamilyApp', name: 'Family TV', show: true, iconPath: '' }]);
 const SEED = { dock: PRIMARY, wallpaper: 'misty', mode: 'fixed', lastApp: 'netflix', theme: 'shore' };
-// An installed text widget in the Tizen host's two-slot record (tizen-store.js), with no host widget registered.
+// An installed text widget in the Tizen host's two-slot record (tizen-store.js), with no host widget installed: bundled modules register theirs, but the slot shows no card.
 const ADDON_DATA = JSON.stringify({ installed: { note: { api: 1, id: 'note', name: 'Note', version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'Hello from the legacy check', enabled: true } }, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } });
 const ADDONS = JSON.stringify({ v: 1, seq: 1, sum: createHash('sha256').update(ADDON_DATA).digest('hex'), data: ADDON_DATA });
 // Computed on every rendered element of the stage, plus html and body.
@@ -356,7 +356,7 @@ try {
   if (WIDGETS.length) {
     const pair = [await open(preview, '', { addons: true }), await open(preview, '?legacy=1', { addons: true })];
     extended = extended.concat(pair);
-    const shown = await pair[1].evaluate(() => { const slot = document.getElementById('cleantvWidgets'); return { card: document.querySelector('#addonWidgets .addon-widget p')?.textContent, slot: !!slot && slot.parentElement.id === 'home' && slot.children.length === 0 }; });
+    const shown = await pair[1].evaluate(() => { const slot = document.getElementById('cleantvWidgets'); return { card: document.querySelector('#addonWidgets .addon-widget p')?.textContent, slot: !!slot && slot.parentElement.id === 'home' && ![...slot.children].some(card => !card.hidden) }; });
     if (shown.card !== 'Hello from the legacy check' || !shown.slot) fail('Stored text widget and empty widget slot render', shown);
     await pass(pair[0], pair[1], WIDGETS);
   }

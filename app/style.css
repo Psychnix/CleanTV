@@ -863,6 +863,35 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000}
 .software-icon{width:72px;height:72px;object-fit:contain;border-radius:16px}
 .software-notes{font-size:24px;line-height:32px;white-space:pre-wrap;overflow-wrap:break-word;margin:24px 0;color:var(--ink)}
 
+/* CleanTV weather widget (app/tizen-weather.js). Fixed slots: a switched-off element keeps its place,
+   so nothing moves. Dock reads left to right; List mirrors it at the right edge. The pictogram is a
+   CleanTVIcon on the 48 grid at 96px; its glass bodies are the only filled shapes, in the ink copy. */
+.cw-wx{position:relative;width:400px}
+.cw-wx-defs{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden}
+.cw-wx-place{height:36px}
+.cw-wx-body{position:relative;height:136px;margin-top:12px}
+.cw-wx-icon{position:absolute;left:0;top:20px;width:96px;height:96px}
+.cw-wx-icon .cw-icon{display:block}
+.cw-wx-temp{position:absolute;left:120px;top:0;height:56px}
+.cw-wx-range,.cw-wx-wind{position:absolute;left:120px;white-space:nowrap}
+.cw-wx-range{top:60px}
+.cw-wx-wind{top:100px}
+.cw-wx-note{display:block;margin-top:8px;font-size:20px;line-height:28px;font-weight:500;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.font-custom .home .cw-wx-note{font-family:var(--font-ui-family),sans-serif;font-weight:var(--font-ui-weight)}
+.cw-wx.is-list{text-align:right}
+.cw-wx.is-list .cw-wx-icon{left:auto;right:0}
+.cw-wx.is-list .cw-wx-temp,.cw-wx.is-list .cw-wx-range,.cw-wx.is-list .cw-wx-wind{left:auto;right:120px}
+.cw-wx .is-off{visibility:hidden}
+/* Bright photos behind the widget (mint, alpine and sydney in Dock, amber in List) need more than the
+   shared veil: this card lays the same veil colour twice more, so light ink gets a darker plate and dark
+   ink a lighter one. check-browser measures at least 3:1 against the brightest tenth of each plate. */
+.home .cw-card[data-widget="cleantv-weather"] .cw-veil{box-shadow:inset 0 1px 0 rgba(255,250,240,.2),inset 0 0 0 600px var(--cw-veil),inset 0 0 0 600px var(--cw-veil)}
+.cw-wx-icon .ut-ink .wx-glass{fill:currentColor;fill-opacity:.16}
+.bg-dark .cw-wx-icon .ut-ink .wx-glass,.bg-light .cw-wx-icon .ut-ink .wx-glass{fill-opacity:.08}
+/* Weather settings: five toggles and the credit line fit the Settings column above the OK hint. */
+.section-cleantv-weather-show .setting-choice{min-height:64px;padding-top:8px;padding-bottom:8px;font-size:32px;line-height:40px}
+.section-cleantv-weather-show .setting-reason,.section-cleantv-weather-place .setting-reason{font-size:22px;line-height:30px;margin-top:12px}
+
 /* CleanTV on-screen keyboard (app/cleantv-keyboard.js): text line and 10-column keys on the left,
    live suggestions on the right. Built once; remote focus only moves the is-focus class. The
    selectors name .sheet so legacy.js resolves --plate and the other tokens in the sheet context. */

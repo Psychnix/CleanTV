@@ -706,7 +706,7 @@ try {
       const r = slot.getBoundingClientRect(), clock = document.querySelector('.caption .clock').getBoundingClientRect(), u = document.getElementById('utils').getBoundingClientRect();
       const card = visible[visible.length - 1], field = card && card.querySelector('.cw-field'), img = card && card.querySelector('.cw-field img');
       const cs = card && getComputedStyle(card);
-      return { order: cards.map(c => c.getAttribute('data-widget')), visible: visible.length, hidden: slot.hidden, left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), clockRight: Math.round(clock.right), utilsBottom: Math.round(u.bottom),
+      return { order: cards.map(c => c.getAttribute('data-widget')).filter(id => /^qa/.test(id)), visible: visible.length, hidden: slot.hidden, left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), clockRight: Math.round(clock.right), utilsBottom: Math.round(u.bottom),
         card: card && { left: card.offsetLeft + slot.offsetLeft, top: card.offsetTop + slot.offsetTop, width: card.offsetWidth, height: card.offsetHeight, transform: field.style.transform, src: img.getAttribute('src') || '', glass: getComputedStyle(card.querySelector('.cw-glass')).display, background: cs.backgroundColor, color: cs.color, shadow: cs.textShadow, padding: cs.padding, radius: cs.borderRadius },
         clockColor: getComputedStyle(document.querySelector('.caption .clock')).color, stage: document.getElementById('stage').className };
     });
