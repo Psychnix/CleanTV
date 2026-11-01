@@ -29,7 +29,7 @@ Install and update:
 
 `FrameDevice.addons` keeps the Android contract (`state`, `refresh`, `install`, `remove`, `toggle`, `updateAll`; `cleanframe:addons` after every operation). The state has no `readOnly` field any more. Installed packages, the last good catalog and `catalogInfo` are stored through `CleanTVStore` under `cleantv.addons.v1` as `{installed: {id: package + enabled}, catalog, catalogInfo}`. A failed write keeps the previous state ("Could not save add-ons."). A stored package this build cannot read (for example a kind whose module is absent after a downgrade) is kept unchanged in storage but not offered. It still counts as the installed version of its ID: a catalog entry with that ID and another kind is refused ("An update cannot change the add-on type."), an older or equal version is refused ("This add-on is already up to date."), and only a newer version of the same kind replaces it (also through Update all), keeping its activation state within the widget limit. Add-on IDs match `^[a-z][a-z0-9-]{0,47}$` except `constructor`, the one `Object.prototype` key that pattern could match; a catalog listing it fails like any other invalid ID.
 
-`app/config.xml` grants the public `internet` privilege and these origins, in this order, each with `subdomains="false"`: `https://raw.githubusercontent.com`, `https://api.open-meteo.com`, `https://geocoding-api.open-meteo.com`, `https://openplzapi.org`, `https://accounts.spotify.com`, `https://api.spotify.com`, `https://i.scdn.co`. `scripts/check.py` asserts exactly this list, requires every `https://` string literal in `app/tizen-*.js` and `app/cleantv-*.js` to use one of these origins, and rejects CSP or navigation elements, which would switch the Tizen runtime to CSP mode and block the inline styles that `legacy.js` inserts. `scripts/check-browser.mjs` reads the same list and reports any request to one of these origins that a test did not explicitly allow.
+`app/config.xml` grants the public `internet` privilege and these origins, in this order, each with `subdomains="false"`: `https://raw.githubusercontent.com`, `https://api.open-meteo.com`, `https://geocoding-api.open-meteo.com`, `https://openplzapi.org`, `https://accounts.spotify.com`, `https://api.spotify.com`, `https://i.scdn.co`, `https://cleantv-spotify.tobiaspsi96.workers.dev` (the Spotify sign-in relay, see Spotify on Samsung). `scripts/check.py` asserts exactly this list, requires every `https://` string literal in `app/tizen-*.js` and `app/cleantv-*.js` to use one of these origins, and rejects CSP or navigation elements, which would switch the Tizen runtime to CSP mode and block the inline styles that `legacy.js` inserts. `scripts/check-browser.mjs` reads the same list and reports any request to one of these origins that a test did not explicitly allow.
 
 ## CleanTV host interfaces
 
@@ -133,6 +133,58 @@ Card and type contract (style.css):
 `window.CleanTVIcon(svgInner, size)` → SVG markup with the `ut-underlay`/`ut-ink` layering of `icon()` on a 48-unit viewBox at `size` pixels (8–256). The ink inherits `stroke-width: 1.6` and `currentColor`; inside a card the underlay uses `--cw-under` at 2.8 and disappears on flat backgrounds. `svgInner` is trusted module markup; never pass downloaded text.
 
 Keep widget and view CSS free of `gap`, the `inset` shorthand, `:focus-visible` reliance, `backdrop-filter`, live blur and runtime pixel analysis: Chromium 47 lacks the first ones, and the others are off the TV's animation path by design. `scripts/check.py` rejects `gap` and `inset`; `npm run check:legacy` compares widget cards with and without the resolver.
+
+## Spotify on Samsung
+
+`app/tizen-spotify.js` loads after `tizen-store.js` (with `vendor/qrcode.js`) and before `tizen-addons.js`. On a Samsung TV it registers the `spotify` kind and sets `FrameDevice.spotify` and `FrameDevice.capabilities.spotify` with the Android contract (`state`, `observe`, `control`, `access`, `link`, `signOut`; `cleanframe:spotify` and `cleanframe:spotify-link` events). The upstream package `packages/spotify/1.0.0.json` is accepted unchanged; a `spotify` entry with another ID fails the refresh ("Unsupported widget kind."), as on Android. The package is only a switch: all behaviour is in the host.
+
+`main.js` keeps one Spotify card, settings group and QR setup screen for both platforms. The gate is `FrameDevice.capabilities.spotify`. On Samsung, Open Spotify launches `rJeHak5zRg.Spotify`, the Android-only Media access row is hidden, covers come from `https://i.scdn.co/image/<40 hex>`, and the sign-out note points to spotify.com/account/apps for a full revocation.
+
+### Sign-in (Authorization Code with PKCE on the TV)
+
+- Spotify Developer app: client ID `6058b47c8aab44dd87826487377bdf6c` (public, as PKCE intends), redirect URI exactly `https://cleantv-spotify.tobiaspsi96.workers.dev/callback`, scopes `user-read-playback-state user-modify-playback-state`. No client secret exists anywhere; `scripts/check.py` rejects `client_secret` in `app/` and `relay/`.
+- The TV takes 32 random bytes from `crypto.getRandomValues` for the verifier (base64url), computes the S256 challenge with `CleanTVSha256` (`base64url(raw(utf8(verifier)))`), and draws 16 bytes for its state and 32 bytes for a poll secret.
+- `POST <relay>/pair` (JSON as `text/plain`, so no CORS preflight) sends `{challenge, state, pollHash}` with `pollHash = sha256 hex(secret)` and returns `{id, expiresIn}`. The QR code for `<relay>/start/<id>` is drawn with `app/vendor/qrcode.js` (qrcode-generator 1.4.4, MIT, see `THIRD_PARTY_NOTICES.md`) onto a canvas and shown as a PNG data URI, with the first six characters of the ID and the countdown.
+- While the QR screen is open the TV polls `POST <relay>/poll/<id>` with `{secret}` every 2 s, one request at a time, until expiry (10 minutes). Back, leaving the app and disabling or removing the package cancel the session.
+- The returned state must equal `<id>.<state>`; otherwise the sign-in fails ("Sign-in could not be verified."). The TV then redeems the code at `https://accounts.spotify.com/api/token` (form-encoded `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier`) and requires a Bearer token, a refresh token and both scopes.
+
+### Tokens
+
+- Only the refresh token is stored, through `CleanTVStore` under `cleantv.spotify.v1` as `{refreshToken}`. A rotated refresh token is saved before the new access token is used; when Spotify sends none, the stored one stays.
+- The access token stays in memory and is refreshed before a request when less than 60 seconds remain. A 401 forces one refresh and a retry; a second 401 shows "Sign in to Spotify again." A `400 invalid_grant` (Spotify's refresh tokens expire six months after the original sign-in) removes the stored token.
+- Sign out removes both slots and stops all Spotify traffic. Removing the package keeps the sign-in, as on Android; sign out first to clear it.
+- Verifier, poll secret, code and tokens never reach `state()`, events, `ShoreQA.state()`, logs or other storage keys.
+
+### Playback
+
+`GET https://api.spotify.com/v1/me/player?additional_types=episode` runs only while `main.js` observes (Home or the Spotify settings visible, package enabled, document visible), one request at a time with an 8-second timeout:
+
+| Situation | Next poll |
+| --- | --- |
+| Playing | 5 s, or 750 ms after the track's end if sooner |
+| Paused | 15 s |
+| 204 or no item (nothing playing) | 30 s, then 60 s after five minutes |
+| After a control | 750 ms |
+| 429 | `Retry-After` when the TV can read it (Spotify sends no `Access-Control-Expose-Headers` today), else 30 s doubling to 5 minutes |
+| 5xx or network error | 10 s doubling to 60 s |
+| 403 | 60 s ("Spotify denied access. Check Premium and the Developer app's users.") |
+
+Returning to Home polls at once unless a backoff is running, and at most once per second. Controls send `PUT /me/player/play` or `/pause` and `POST /me/player/next` or `/previous` with `?device_id=` of the active device and no body. A 403 with reason `PREMIUM_REQUIRED` shows "Spotify Premium is required for playback controls." and disables the buttons for the session; 404 shows that no device is active; restricted devices and `actions.disallows` disable the matching buttons without a request. `cleanframe:spotify` is sent only when the state changes; a pure progress update only when it drifts by two seconds, because the card extrapolates the bar itself. The cover nearest 300 px from `i.scdn.co` or `image-cdn-ak`/`image-cdn-fa.spotifycdn.com` is rewritten to `https://i.scdn.co/image/<id>`, preloaded with `new Image()` and shown only after it loaded; there is no pixel analysis, so the cover colour stays the host fallback.
+
+### Network and diagnosis
+
+Spotify traffic exists only while the Spotify package is installed and enabled; every URL is a constant in `tizen-spotify.js`. Every failed request (status 0: TLS, DNS, access policy) shows "Could not reach `<host>` (no connection, certificate or access policy)." and every timeout "`<host>` did not respond in time.", both translated, so a TLS failure on the TV names the hop. Root certificates seen from a PC (not verified on the TV): accounts.spotify.com Starfield Root G2 (via Certainly), api.spotify.com DigiCert Global Root G2, i.scdn.co DigiCert Global Root G3 (ECC), the relay GTS Root R4 (cross-signed by GlobalSign Root CA).
+
+### Relay
+
+`relay/spotify-worker/` is the owner's Cloudflare Worker `cleantv-spotify` with one SQLite-backed Durable Object per pairing (deleted by an alarm after ten minutes); see its README for routes, deployment with a pinned `npx wrangler` and curl tests. `npm run check:relay` tests it offline; it is not part of `check:device`.
+
+### Privacy
+
+- The TV stores the refresh token unencrypted in the app's own localStorage, in the same JavaScript context as the UI; Spotify text is rendered with `textContent`. A stolen refresh token allows reading and controlling playback until it is revoked at spotify.com/account/apps.
+- The relay stores, per pairing and for at most ten minutes, the PKCE challenge, the TV's state, the hash of the poll secret and the one-time code (or Spotify's error). It never sees the verifier, the poll secret, a token or a client secret, so the code is useless to it. Workers Logs are disabled.
+- The phone's browser history keeps the `/callback` address with the one-time code; without the verifier on the TV it cannot be redeemed, and the relay deletes it once the TV collected it.
+- Tests use synthetic tokens and routed fakes only (`scripts/test-tizen-spotify.mjs` in `check:device`, the Tizen Spotify section of `check-browser.mjs`, the Spotify states of `check-legacy.mjs`).
 
 ## Native packages
 
