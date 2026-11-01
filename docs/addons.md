@@ -137,7 +137,7 @@ A reusable on-screen keyboard for the remote, loaded before the modules that use
 - `ctx = { language, layout: 'dock' | 'list', bg: 'photo' | 'dark' | 'light', visible }`. `visible` is false in arrange mode and while the Spotify player is expanded; the slot is then hidden.
 - Geometry: Dock left 140, top 260 (220 without the date). List right-aligned to the clock's right edge (x 1780), top 300 (260 without the date); with List and Controls position Top right it sits 40px below the controls.
 - Cards stack with a 16px gap. They are at most 840px wide in Dock, so they end before the text and clock cards at x 1000, and at most 880px wide in List.
-- Text and clock add-on cards (`#addonWidgets`) keep their place (x 1000, top 260) while no host card is visible. In List with visible host cards they move into the same right-aligned column, directly below the host cards, so the two never overlap.
+- Text and clock add-on cards (`#addonWidgets`) keep their place (x 1000, top 260) while no host card is visible. In List with visible host cards they move into the same right-aligned column, directly below the host cards, so the two never overlap. A card there that would come within 16px of the Home controls or the compact Spotify player, or within 32px of the bottom edge, is left out together with the cards after it; the first cards in stored order stay. Left-out cards return on the next render with room for them (a smaller host card, the controls moved, the player gone). Below the 260px weather card the first text card always fits; how many more fit depends on the date line, the controls position and the player.
 
 Card and type contract (style.css):
 
