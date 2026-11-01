@@ -5,6 +5,10 @@
 // authorization code. Without the verifier that code cannot be redeemed, so the relay never holds
 // anything that grants account access. Pairings expire after ten minutes (an alarm deletes them).
 //
+// Anyone can create a pairing and send its sign-in link to someone else. The code is therefore
+// released only after the phone confirmed that the code on its page matches the one on the TV
+// (/confirm with a nonce that only the callback page shows); an error result needs no confirmation.
+//
 // Never log codes, states or secrets: this file contains no console calls on purpose, and errors are
 // answered without details.
 
@@ -69,15 +73,25 @@ export class SpotifyPairing {
     if (op === 'peek') return Response.json({ state: record.state, challenge: record.challenge, pending: !record.result });
     if (op === 'callback') {
       if (!same(input.tvState, record.state)) return Response.json({ error: 'state' }, { status: 403 });
-      // Stored once: a second callback for the same pairing changes nothing.
+      // Stored once: a second callback for the same pairing changes nothing. Reloading the unconfirmed
+      // page (the same code) shows the same confirmation again.
+      if (record.result && record.nonce && !record.confirmed && same(input.result.code, record.result.code)) return Response.json({ ok: true, nonce: record.nonce });
       if (record.result) return Response.json({ error: 'used' }, { status: 409 });
       record.result = input.result;
+      // A code waits for the phone's confirmation; the nonce reaches only the callback page.
+      if (typeof input.result.code === 'string') { record.nonce = randomId(); record.confirmed = false; }
       await this.storage.put('pairing', record);
+      return Response.json(record.nonce ? { ok: true, nonce: record.nonce } : { ok: true });
+    }
+    if (op === 'confirm') {
+      if (!record.nonce || !same(input.nonce, record.nonce)) return Response.json({ error: 'forbidden' }, { status: 403 });
+      // A second confirmation changes nothing.
+      if (!record.confirmed) { record.confirmed = true; await this.storage.put('pairing', record); }
       return Response.json({ ok: true });
     }
     if (op === 'poll') {
       if (!same(input.hash, record.pollHash)) return Response.json({ error: 'forbidden' }, { status: 403 });
-      if (!record.result) return Response.json({ pending: true });
+      if (!record.result || (record.nonce && !record.confirmed)) return Response.json({ pending: true });
       // Delivered exactly once, then the record is gone.
       const result = record.result;
       await this.clear();
@@ -138,13 +152,16 @@ async function readJson(request, keys) {
 }
 
 /* ---------- Pages for the phone: no external resources, no script ---------- */
-const STYLE = 'body{margin:0;font:18px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:#121212;color:#f4f4f1}main{max-width:32em;margin:18vh auto;padding:0 24px}h1{font-size:24px;line-height:1.3;margin:0 0 12px}p{margin:0;color:#bdbdbd}';
+const STYLE = 'body{margin:0;font:18px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:#121212;color:#f4f4f1}main{max-width:32em;margin:18vh auto;padding:0 24px}h1{font-size:24px;line-height:1.3;margin:0 0 12px}p{margin:0;color:#bdbdbd}'
+  + '.code{margin:20px 0;font:700 44px/1.1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;color:#f4f4f1}a{display:inline-block;margin-top:28px;padding:14px 26px;border-radius:999px;background:#f4f4f1;color:#121212;font-weight:700;text-decoration:none}';
 let styleHash = null;
-async function page(status, title, line) {
+/* code and link are built from validated hex only; title and line are constants. */
+async function page(status, title, line, code, link) {
   styleHash = styleHash || 'sha256-' + btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(STYLE)))));
   const html = '<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
     + '<meta name="referrer" content="no-referrer"><title>CleanTV · Spotify</title><style>' + STYLE + '</style></head>'
-    + '<body><main><h1>' + title + '</h1>' + (line ? '<p>' + line + '</p>' : '') + '</main></body></html>';
+    + '<body><main><h1>' + title + '</h1>' + (code ? '<p class="code">' + code + '</p>' : '') + (line ? '<p>' + line + '</p>' : '')
+    + (link ? '<a href="' + link + '">Ja, mit dem Fernseher verbinden</a>' : '') + '</main></body></html>';
   return new Response(html, { status, headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Security-Policy': "default-src 'none'; style-src '" + styleHash + "'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
@@ -161,6 +178,9 @@ const PAGES = {
   broken: [500, 'Die Anmeldung ist gerade nicht möglich.', 'Bitte versuche es später erneut.']
 };
 const show = name => page(...PAGES[name]);
+/* After the Spotify sign-in: the phone compares the TV's code before the relay releases anything. */
+const confirmation = (id, nonce) => page(200, 'Steht dieser Code gerade auf deinem Fernseher?', 'Nur dann weiter. Wenn nicht, schließe diese Seite.',
+  id.slice(0, 6).toUpperCase(), '/confirm/' + id + '/' + nonce);
 
 /* ---------- Routes ---------- */
 async function route(request, env) {
@@ -189,7 +209,7 @@ async function route(request, env) {
     if (result.body.pending === true) return json({ pending: true });
     return json(typeof result.body.error === 'string' ? { error: result.body.error } : { code: result.body.code, state: result.body.state });
   }
-  // GET only: a HEAD or prefetch must never consume a callback.
+  // GET only: a HEAD or prefetch must never consume a callback or a confirmation.
   if (method !== 'GET') return new Response(null, { status: 405, headers: { Allow: 'GET', 'Cache-Control': 'no-store' } });
   const start = /^\/start\/([^/]*)$/.exec(path);
   if (start) {
@@ -200,7 +220,7 @@ async function route(request, env) {
     const target = new URL(AUTHORIZE);
     target.search = new URLSearchParams({
       response_type: 'code', client_id: env.CLIENT_ID, redirect_uri: env.REDIRECT_URI, code_challenge_method: 'S256',
-      code_challenge: found.body.challenge, scope: SCOPE, state: start[1] + '.' + found.body.state
+      code_challenge: found.body.challenge, scope: SCOPE, state: start[1] + '.' + found.body.state, show_dialog: 'true'
     }).toString();
     return new Response(null, { status: 302, headers: { Location: target.toString(), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
   }
@@ -214,7 +234,17 @@ async function route(request, env) {
     if (stored.status === 404) return show('expired');
     if (stored.status === 403) return show('invalid');
     if (stored.status === 409) return show('used');
-    return show(code !== null ? 'connected' : 'cancelled');
+    if (code === null) return show('cancelled');
+    if (!ID.test(stored.body.nonce || '')) return show('broken');
+    return confirmation(match[1], stored.body.nonce);
+  }
+  const confirm = /^\/confirm\/([^/]*)\/([^/]*)$/.exec(path);
+  if (confirm) {
+    if (!ID.test(confirm[1]) || !ID.test(confirm[2])) return show('invalid');
+    const confirmed = await pairing(env, confirm[1])('confirm', { nonce: confirm[2] });
+    if (confirmed.status === 404) return show('expired');
+    if (confirmed.status !== 200) return show('invalid');
+    return show('connected');
   }
   return show('missing');
 }

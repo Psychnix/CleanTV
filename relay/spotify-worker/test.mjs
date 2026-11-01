@@ -61,8 +61,14 @@ async function pair(env, tv = tvSide()) {
   return { ...tv, id: body.id };
 }
 const poll = (env, id, secret) => call(env, '/poll/' + id, { method: 'POST', body: { secret } });
+/* The callback page for a code, with its confirm link and nonce (the phone confirms the code shown on the TV). */
+async function signIn(env, tv, code) {
+  const response = await call(env, '/callback?code=' + code + '&state=' + tv.id + '.' + tv.state), html = await response.text();
+  const link = /<a href="(\/confirm\/([a-f0-9]{32})\/([a-f0-9]{32}))">/.exec(html);
+  return { response, html, link: link && link[1], nonce: link && link[3] };
+}
 
-test('the whole flow: pair, start, callback, then one poll delivers the code once', async t => {
+test('the whole flow: pair, start, callback, confirmation, then one poll delivers the code once', async t => {
   clock(t);
   const { env, objects } = environment();
   const tv = await pair(env);
@@ -81,11 +87,18 @@ test('the whole flow: pair, start, callback, then one poll delivers the code onc
   assert.equal(target.origin + target.pathname, 'https://accounts.spotify.com/authorize');
   assert.deepEqual(Object.fromEntries(target.searchParams), {
     response_type: 'code', client_id: CLIENT_ID, redirect_uri: REDIRECT, code_challenge_method: 'S256',
-    code_challenge: tv.challenge, scope: 'user-read-playback-state user-modify-playback-state', state: tv.id + '.' + tv.state
+    code_challenge: tv.challenge, scope: 'user-read-playback-state user-modify-playback-state', state: tv.id + '.' + tv.state, show_dialog: 'true'
   });
 
   const code = 'AQ' + b64url(randomBytes(120));
-  response = await call(env, '/callback?code=' + code + '&state=' + tv.id + '.' + tv.state);
+  const signedIn = await signIn(env, tv, code);
+  assert.equal(signedIn.response.status, 200);
+  assert.ok(signedIn.html.includes('>' + tv.id.slice(0, 6).toUpperCase() + '<') && signedIn.link, 'the TV code and a confirm link');
+  assert.ok(!signedIn.html.includes(code) && !signedIn.html.includes(tv.state), 'the page never repeats the code or state');
+  assert.deepEqual(Object.keys(await objects.get(tv.id).storage.get('pairing')).sort(), ['challenge', 'confirmed', 'expiresAt', 'nonce', 'pollHash', 'result', 'state']);
+  assert.deepEqual(await (await poll(env, tv.id, tv.secret)).json(), { pending: true }, 'pending until the phone confirms');
+
+  response = await call(env, signedIn.link);
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /Verbunden – du kannst zum Fernseher zurückkehren\./);
@@ -103,16 +116,23 @@ test('the whole flow: pair, start, callback, then one poll delivers the code onc
   assert.equal(response.status, 404, 'the start link is spent');
 });
 
-test('the callback stores once; a second callback cannot replace the code', async t => {
+test('the callback stores once; another code cannot replace it, a reload shows the same confirmation', async t => {
   clock(t);
   const { env } = environment();
   const tv = await pair(env);
-  const first = await call(env, '/callback?code=first-code&state=' + tv.id + '.' + tv.state);
-  assert.equal(first.status, 200);
+  const first = await signIn(env, tv, 'first-code');
+  assert.equal(first.response.status, 200);
   const second = await call(env, '/callback?code=other-code&state=' + tv.id + '.' + tv.state);
   assert.equal(second.status, 409);
-  assert.match(await second.text(), /bereits verwendet/);
+  const used = await second.text();
+  assert.match(used, /bereits verwendet/);
+  assert.doesNotMatch(used, /confirm/, 'another code gets no confirm link');
   assert.equal((await call(env, '/start/' + tv.id)).status, 409, 'start after the callback says the link was used');
+  const reload = await signIn(env, tv, 'first-code');
+  assert.equal(reload.response.status, 200);
+  assert.equal(reload.link, first.link, 'a reload of the callback page shows the same link');
+  assert.equal((await call(env, first.link)).status, 200);
+  assert.equal((await call(env, '/callback?code=first-code&state=' + tv.id + '.' + tv.state)).status, 409, 'after the confirmation the callback is used');
   assert.deepEqual(await (await poll(env, tv.id, tv.secret)).json(), { code: 'first-code', state: tv.id + '.' + tv.state });
 });
 
@@ -120,7 +140,9 @@ test('a wrong secret gets 403 and leaves the code for the right one', async t =>
   clock(t);
   const { env } = environment();
   const tv = await pair(env);
-  await call(env, '/callback?code=the-code&state=' + tv.id + '.' + tv.state);
+  const { link } = await signIn(env, tv, 'the-code');
+  assert.equal((await poll(env, tv.id, tvSide().secret)).status, 403, 'also before the confirmation');
+  await call(env, link);
   for (const secret of [tvSide().secret, tv.pollHash.slice(0, 43), tv.secret.slice(0, 42) + (tv.secret[42] === 'A' ? 'B' : 'A')]) {
     const response = await poll(env, tv.id, secret);
     assert.equal(response.status, 403, secret === tv.pollHash.slice(0, 43) ? 'the hash itself is not the secret' : 'wrong secret');
@@ -165,7 +187,9 @@ test('an error callback reaches the TV once as {error}', async t => {
   const tv = await pair(env);
   const response = await call(env, '/callback?error=access_denied&state=' + tv.id + '.' + tv.state);
   assert.equal(response.status, 200);
-  assert.match(await response.text(), /Anmeldung abgebrochen/);
+  const html = await response.text();
+  assert.match(html, /Anmeldung abgebrochen/);
+  assert.doesNotMatch(html, /confirm/, 'an error needs no confirmation');
   assert.deepEqual(await (await poll(env, tv.id, tv.secret)).json(), { error: 'access_denied' });
   assert.equal((await poll(env, tv.id, tv.secret)).status, 404);
   for (const query of ['?error=access_denied', '?code=x&error=access_denied&state=' + tv.id + '.' + tv.state, '?error=Bad%20Error&state=' + tv.id + '.' + tv.state,
@@ -223,13 +247,15 @@ test('OPTIONS preflights are answered; other methods are refused', async t => {
   }
   assert.equal((await call(env, '/callback?code=x&state=y', { method: 'HEAD' })).status, 405, 'a HEAD request never consumes a callback');
   assert.equal((await call(env, '/start/' + 'a'.repeat(32), { method: 'POST', body: '{}' })).status, 405);
+  for (const method of ['HEAD', 'POST', 'OPTIONS']) assert.equal((await call(env, '/confirm/' + 'a'.repeat(32) + '/' + 'b'.repeat(32), { method })).status, 405, method + ' never confirms');
 });
 
 test('pages carry a strict CSP, no external resources and no-store', async t => {
   clock(t);
   const { env } = environment();
   const tv = await pair(env);
-  for (const path of ['/callback?code=abc&state=' + tv.id + '.' + tv.state, '/start/' + 'b'.repeat(32), '/', '/callback']) {
+  const { link } = await signIn(env, tv, 'abc');
+  for (const path of ['/callback?code=abc&state=' + tv.id + '.' + tv.state, link, '/start/' + 'b'.repeat(32), '/', '/callback', '/confirm/' + 'c'.repeat(32) + '/' + 'd'.repeat(32), '/confirm/x/y']) {
     const response = await call(env, path), html = await response.text();
     assert.match(response.headers.get('content-type'), /^text\/html; charset=utf-8$/);
     const csp = response.headers.get('content-security-policy');
@@ -263,7 +289,9 @@ test('nothing is logged and comparisons are constant-time helpers', async t => {
   const { env } = environment();
   const tv = await pair(env);
   await call(env, '/start/' + tv.id);
-  await call(env, '/callback?code=secret-code&state=' + tv.id + '.' + tv.state);
+  const { link } = await signIn(env, tv, 'secret-code');
+  await call(env, link.replace(/.$/, c => c === 'a' ? 'b' : 'a'));
+  await call(env, link);
   await poll(env, tv.id, 'A'.repeat(43));
   await poll(env, tv.id, tv.secret);
   await call(env, '/pair', { method: 'POST', body: '{"broken"' });
@@ -272,4 +300,80 @@ test('nothing is logged and comparisons are constant-time helpers', async t => {
   assert.equal(same('abc', 'abd'), false);
   assert.equal(same('abc', 'abcd'), false);
   assert.equal(same('abc', undefined), false);
+});
+
+test('a callback without /start (a crafted authorize link) is not released before the phone confirms', async t => {
+  clock(t);
+  const { env } = environment();
+  const tv = await pair(env);
+  const { response } = await signIn(env, tv, 'crafted-code');
+  assert.equal(response.status, 200);
+  for (let i = 0; i < 3; i++) assert.deepEqual(await (await poll(env, tv.id, tv.secret)).json(), { pending: true }, 'pending until confirmed');
+});
+
+test('the callback page shows the TV code and a confirm link; only its nonce releases the code, once', async t => {
+  clock(t);
+  const { env, objects } = environment();
+  const tv = await pair(env), other = await pair(env);
+  const { response, html, link, nonce } = await signIn(env, tv, 'the-code');
+  assert.equal(response.status, 200);
+  assert.match(html, /Steht dieser Code gerade auf deinem Fernseher\?/);
+  assert.ok(html.includes('>' + tv.id.slice(0, 6).toUpperCase() + '<'), 'the page shows the code from the TV');
+  assert.ok(link && link.startsWith('/confirm/' + tv.id + '/'), 'a same-origin confirm link');
+  assert.doesNotMatch(html, /Verbunden/, 'not connected before the confirmation');
+  const stored = await objects.get(tv.id).storage.get('pairing');
+  assert.ok(stored.result && stored.confirmed === false && same(stored.nonce, nonce));
+
+  const wrong = nonce.replace(/^./, c => c === 'a' ? 'b' : 'a');
+  for (const path of ['/confirm/' + tv.id + '/' + wrong, '/confirm/' + other.id + '/' + nonce, '/confirm/' + tv.id + '/' + nonce.toUpperCase(), '/confirm/' + tv.id + '/' + nonce.slice(1)]) {
+    const refused = await call(env, path);
+    assert.ok(refused.status === 400 || refused.status === 403, path);
+    assert.doesNotMatch(await refused.text(), /Verbunden/);
+  }
+  assert.deepEqual(await (await poll(env, tv.id, tv.secret)).json(), { pending: true }, 'a wrong nonce releases nothing');
+  assert.deepEqual(await (await poll(env, other.id, other.secret)).json(), { pending: true }, 'a nonce confirms only its own pairing');
+
+  for (let i = 0; i < 2; i++) {
+    const confirmed = await call(env, link);
+    assert.equal(confirmed.status, 200, 'a second confirmation is a no-op');
+    assert.match(await confirmed.text(), /Verbunden – du kannst zum Fernseher zurückkehren\./);
+  }
+  assert.deepEqual(await (await poll(env, tv.id, tv.secret)).json(), { code: 'the-code', state: tv.id + '.' + tv.state });
+  assert.equal((await poll(env, tv.id, tv.secret)).status, 404, 'delivered once');
+  const late = await call(env, link);
+  assert.equal(late.status, 404, 'the confirm link is spent once the TV collected the code');
+  assert.equal((await call(env, '/confirm/' + 'f'.repeat(32) + '/' + nonce)).status, 404, 'unknown pairings are 404');
+});
+
+test('HEAD or POST on the confirm link is refused and releases nothing', async t => {
+  clock(t);
+  const { env } = environment();
+  const tv = await pair(env);
+  const { link } = await signIn(env, tv, 'kept-code');
+  assert.equal((await call(env, link, { method: 'HEAD' })).status, 405, 'a HEAD request never confirms');
+  assert.equal((await call(env, link, { method: 'POST', body: '{}' })).status, 405);
+  assert.deepEqual(await (await poll(env, tv.id, tv.secret)).json(), { pending: true });
+  assert.equal((await call(env, link)).status, 200);
+  assert.deepEqual(await (await poll(env, tv.id, tv.secret)).json(), { code: 'kept-code', state: tv.id + '.' + tv.state });
+});
+
+test('the start link asks Spotify to show its consent dialog', async t => {
+  clock(t);
+  const { env } = environment();
+  const tv = await pair(env);
+  const target = new URL((await call(env, '/start/' + tv.id)).headers.get('location'));
+  assert.equal(target.searchParams.get('show_dialog'), 'true');
+});
+
+test('a confirmation after expiry finds nothing', async t => {
+  const time = clock(t);
+  const { env } = environment();
+  const tv = await pair(env);
+  time.advance(300_000);
+  const { link } = await signIn(env, tv, 'slow-code');
+  time.advance(300_000);
+  const late = await call(env, link);
+  assert.equal(late.status, 404);
+  assert.match(await late.text(), /abgelaufen/);
+  assert.equal((await poll(env, tv.id, tv.secret)).status, 404);
 });

@@ -754,7 +754,7 @@ try {
     check('Pairing sends only the challenge, the TV state and the poll hash, as text/plain', log.pair.length === 1 && same(Object.keys(pair.body).sort(), ['challenge', 'pollHash', 'state'])
       && /^[A-Za-z0-9_-]{43}$/.test(pair.body.challenge) && /^[A-Za-z0-9_-]{22}$/.test(pair.body.state) && /^[a-f0-9]{64}$/.test(pair.body.pollHash) && /^text\/plain/.test(pair.type), pair.type);
     const qr = await current.evaluate(() => { const img = document.getElementById('spotifyPairQr'); return { natural: img.naturalWidth, shown: Math.round(img.getBoundingClientRect().width), status: document.querySelector('.addon-setup-status').innerText }; });
-    check('The QR screen shows a drawn PNG, the pairing code and the countdown', qr.natural >= 300 && qr.shown === 320 && /C0FFEE · (10:00|9:5\d)/.test(qr.status) && /Scan the QR code/.test(qr.status), qr);
+    check('The QR screen shows a drawn PNG, the labelled pairing code and the countdown', qr.natural >= 300 && qr.shown === 320 && /Code on your phone: C0FFEE · (10:00|9:5\d)/.test(qr.status) && /Scan the QR code/.test(qr.status), qr);
     approved = true;
     await current.waitForFunction(() => /Spotify is connected/.test(document.querySelector('.addon-setup-status')?.innerText || ''));
     const exchange = log.token[0];

@@ -679,7 +679,7 @@ try {
         const qrFacts = await sheetFacts(pair[1]);
         if (qrFacts.audit.length || qrFacts.diagnostics.notes.length || qrFacts.cssomVar || qrFacts.overlay) fail('Resolved sheet stays clean: ' + qrState.name, qrFacts.audit.slice(0, 8));
         const card = await pair[1].evaluate(() => ({ countdown: document.querySelector('.addon-setup-status').innerText }));
-        if (!/C0FFEE · 10:00/.test(card.countdown)) fail('The QR screen shows the pairing code and countdown', card);
+        if (!/Code on your phone: C0FFEE · 10:00/.test(card.countdown)) fail('The QR screen shows the labelled pairing code and countdown', card);
       }
       for (const p of pair) { if (p.__errors.length) fail('Spotify pages: no page errors', p.__errors); await p.close(); }
     }
