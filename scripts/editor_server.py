@@ -46,7 +46,7 @@ def validate(project):
     if result.returncode: raise ValueError('Der Entwurf enthält ungültige Werte. '+result.stdout.decode()[:1400])
 
 class Store:
-    def __init__(self,path):
+    def __init__(self,path,platform='android'):
         self.path=path; self.lock=threading.Lock(); self.token=secrets.token_urlsafe(32); self.job=None
         previous=sorted((path/'releases').glob('*/status.json'),key=lambda p:p.stat().st_mtime)
         if previous:self.job=previous[-1].parent.name
@@ -55,10 +55,17 @@ class Store:
         if token_file.exists():self.token=json.loads(token_file.read_text())
         else:atomic(token_file,self.token)
         if not (path/'project.json').exists(): atomic(path/'project.json',initial(path))
-        from editor_tv import Television
         from editor_agent import Agent
-        from editor_live import LiveVideo
-        self.tv=Television(self);self.agent=Agent(self);self.live=LiveVideo(self.tv)
+        self.platform=platform
+        if platform=='tizen':
+            # Samsung: sdb + CleanTV's page inspector; Live is the redrawn mirror, never video.
+            from editor_tizen import TizenTelevision
+            self.tv=TizenTelevision(self);self.agent=Agent(self);self.live=self.tv.mirror
+        else:
+            from editor_tv import Television
+            from editor_live import LiveVideo
+            self.tv=Television(self);self.agent=Agent(self);self.live=LiveVideo(self.tv)
+        self.mirror=getattr(self.tv,'mirror',None)
     def read(self):
         raw=(self.path/'project.json').read_bytes()
         return json.loads(raw),hashlib.sha256(raw).hexdigest()
@@ -77,6 +84,8 @@ class Store:
             updated.update(design=captured['design'], preferences=prefs, basePrefs=copy.deepcopy(prefs),
                            baseCapturedAt=stamp, guides=[], undo=[], redo=[],
                            tvSource=dict(version=captured['version'], apps=captured['apps'], addons=captured['addons']))
+            if captured.get('platform') == 'tizen':
+                updated['tvSource'].update(platform='tizen', wallpapers=captured.get('wallpapers', []))
             updated.pop('addonLab', None)
             updated['ui'].update(view='home', state='compact', mode='edit', selection='')
             validate(updated)
@@ -85,12 +94,28 @@ class Store:
                    created=stamp, project=project))
             atomic(self.path/'project.json', updated)
             local=json.loads((ROOT/'package.json').read_text())
-            expected_version=local['version']+'-android'+str(local['cleanframe']['androidVersionCode'])
+            expected_version=local['version'] if captured.get('platform') == 'tizen' else local['version']+'-android'+str(local['cleanframe']['androidVersionCode'])
             return dict(etag=self.read()[1], version=captured['version'], snapshot=ident,
                         sourceMatches=captured['version']==expected_version)
 
 
 class DraftConflict(ValueError): pass
+
+def tizen_draft(project):
+    """Boot data for a Samsung draft preview: the draft's own values plus sample media, never TV data."""
+    source=project.get('tvSource') or {}
+    record=copy.deepcopy(project['preferences'])
+    record['appRecords']=[dict(id=a.get('id') or a['appId'],appId=a['appId'],name=a['name'],brand=a.get('brand','')) for a in source.get('apps',[])]
+    installed={a['id']:dict(a,enabled=a.get('enabled') is not False) for a in source.get('addons',[])}
+    return dict(mode='draft',record=record,scenario=project['ui'].get('scenario','playing'),version=source.get('version',''),
+                caps=dict(art=False,home=True,settings=True,spotify=True),addons=dict(installed=installed,catalog=[],busy=False,error=''),
+                walls=dict(message='',limit=10,entries=[dict(w,stored=False) for w in source.get('wallpapers',[])]),
+                apps=[dict(appId=a['appId'],name=a['name'],brand=a.get('brand','')) for a in source.get('apps',[])])
+def tizen_page(boot=None):
+    """The real app page with the development-only Samsung seams (editor/tv-mirror.js)."""
+    early=('<script>window.CleanTVMirrorBoot='+json.dumps(boot,ensure_ascii=False).replace('<','\\u003c')+';</script>' if boot is not None else '')+'<script src="/editor/tv-mirror.js"></script>'
+    raw=(ROOT/'app/index.html').read_text().replace('<script src="android-device.js">',early+'<script src="android-device.js">').replace('<script src="main.js">','<script>CleanTVMirror.beforeMain();</script><script src="main.js">')
+    return (raw.replace('</body>','<script src="/editor/qr-preview.js"></script></body>') if boot is not None else raw).encode()
 
 class Editor(Preview):
     def log_message(self,*args): pass
@@ -111,7 +136,7 @@ class Editor(Preview):
             return self.file(ROOT/'editor/index.html','text/html; charset=utf-8')
         if route.startswith('/editor/'):
             name=route[len('/editor/'):]
-            allowed={'editor.js','editor.css','mock.js','qr-preview.js','workspace.js','geometry.js','native-video.js','addon-lab.js','addon-mock.js'}
+            allowed={'editor.js','editor.css','mock.js','qr-preview.js','workspace.js','geometry.js','native-video.js','addon-lab.js','addon-mock.js','mirror.js','tv-mirror.js'}
             if name not in allowed:self.send_error(404);return
             return self.file(ROOT/'editor'/name)
         if route=='/media/spotify-1.png': return self.file(ROOT/'app/assets/wallpapers/cove-thumb.jpg','image/jpeg')
@@ -121,7 +146,12 @@ class Editor(Preview):
         if route=='/api/editor/watch':
             _,etag=store.read();return self.json(dict(etag=etag,source=fingerprint(),token=store.token))
         if route=='/api/editor/addons/diagnostics':return self.json(store.tv.addon_diagnostics())
-        if route=='/api/editor/tv/status':return self.json(store.tv.status())
+        if route=='/api/editor/tv/status':return self.json(dict(store.tv.status(),platform=store.platform))
+        if route=='/api/editor/tv/mirror':
+            if not store.mirror:return self.json({'error':'Den Live-Spiegel gibt es nur für Samsung-Fernseher.'},409)
+            try:since=max(-1,min(int(parse_qs(urlsplit(self.path).query).get('since',['-1'])[0]),2**31))
+            except ValueError:since=-1
+            return self.json(store.mirror.read(since,wait=2.5))
         if route=='/api/editor/agent/state':return self.json(store.agent.state())
         if route=='/api/editor/tv/live/status':return self.json(store.live.status())
         if route=='/api/editor/tv/live':
@@ -154,6 +184,11 @@ class Editor(Preview):
         if route=='/api/editor/job':
             path=store.path/'releases'/str(store.job)/'status.json'
             return self.json(json.loads(path.read_text()) if store.job and path.exists() else {'state':'idle'})
+        if route=='/home/' and parse_qs(urlsplit(self.path).query).get('mirror')==['1']:
+            # Live-Spiegel frame: the state comes from the editor page (same origin), not this HTML.
+            raw=tizen_page();self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
+        if route=='/home/' and parse_qs(urlsplit(self.path).query).get('editor')==['1'] and (store.read()[0].get('tvSource') or {}).get('platform')=='tizen':
+            raw=tizen_page(tizen_draft(store.read()[0]));self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
         if route=='/home/' and parse_qs(urlsplit(self.path).query).get('editor')==['1']:
             project,_=store.read();boot=json.dumps({'preferences':project['preferences'],'scenario':project['ui'].get('scenario','playing'),'tvSource':project.get('tvSource'),'addonLab':project.get('addonLab'),'softwareVersion':json.loads((ROOT/'package.json').read_text())['version'],'softwareVersionCode':json.loads((ROOT/'package.json').read_text())['cleanframe']['androidVersionCode']},ensure_ascii=False).replace('<','\\u003c')
             raw=(ROOT/'app/index.html').read_text().replace('<script src="android-device.js">','<script>window.CleanFrameEditorBoot='+boot+';</script><script src="/editor/mock.js"></script><script src="/editor/addon-mock.js"></script><script src="android-device.js">').replace('</body>','<script src="/editor/qr-preview.js"></script></body>').encode()
@@ -170,6 +205,10 @@ class Editor(Preview):
             if size<2 or size>4_000_000:self.send_error(413);return
             value=json.loads(self.rfile.read(size));route=urlsplit(self.path).path
             if route=='/api/editor/tv/connect':return self.json(store.tv.connect())
+            if route=='/api/editor/tv/debug':
+                # Announced in the UI: CleanTV restarts on the TV. Fixed commands; the body is ignored.
+                if not hasattr(store.tv,'restart_debug'):raise ValueError('Der Debug-Neustart gibt es nur für Samsung-Fernseher.')
+                return self.json(store.tv.restart_debug())
             if route=='/api/editor/tv/import':return self.json(store.import_tv(value.get('etag')))
             if route=='/api/editor/agent/send':return self.json(store.agent.submit(value.get('text'),value.get('context',{})))
             if route=='/api/editor/agent/stop':return self.json(store.agent.stop())
@@ -204,10 +243,15 @@ class Editor(Preview):
         except Exception as error:self.json({'error':'Der Vorgang ist fehlgeschlagen: '+str(error)},500)
 
 def run():
-    parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=4797);parser.add_argument('--storage',type=Path,default=ROOT/'.local/editor');parser.add_argument('--open',action='store_true');parser.add_argument('--public-fonts',action='store_true');args=parser.parse_args()
-    server=PreviewServer(('127.0.0.1',args.port),Editor);server.include_private_fonts=not args.public_fonts;server.store=Store(args.storage.resolve())
+    parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=4797);parser.add_argument('--storage',type=Path,default=ROOT/'.local/editor');parser.add_argument('--open',action='store_true');parser.add_argument('--public-fonts',action='store_true')
+    # auto: an ADB tv.json selects Android, otherwise .local/device.json selects the Samsung TV.
+    parser.add_argument('--tv',choices=['auto','android','tizen'],default='auto');args=parser.parse_args()
+    from editor_tizen import detect_platform
+    platform=detect_platform(args.storage.resolve()) if args.tv=='auto' else args.tv
+    server=PreviewServer(('127.0.0.1',args.port),Editor);server.include_private_fonts=not args.public_fonts;server.store=Store(args.storage.resolve(),platform=platform)
     url='http://127.0.0.1:'+str(server.server_port)+'/editor/'
     print('CleanTV editor: '+url,flush=True)
+    if platform=='tizen':print('TV: Samsung (Tizen) über sdb · Live-Spiegel nach ausdrücklichem Debug-Neustart',flush=True)
     if args.open:
         import webbrowser
         webbrowser.open(url)

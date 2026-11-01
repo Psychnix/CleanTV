@@ -40,6 +40,7 @@ async function importTv(){
  }finally{importing=false;$('dialogCancel').disabled=false;$('dialog').close();$('importTv').disabled=false;$('importTv').textContent='TV-Stand holen';}
 }
 $('dialog').addEventListener('cancel',event=>{if(importing)event.preventDefault();});
+$('dialog').addEventListener('close',()=>{$('dialogSave').textContent='Speichern';});
 function remember(){project.undo??=[];project.undo.push(content());if(project.undo.length>50)project.undo.shift();project.redo=[];historyButtons();}
 function historyButtons(){$('undo').disabled=!project?.undo?.length;$('redo').disabled=!project?.redo?.length;}
 async function history(direction){
@@ -65,6 +66,8 @@ function resize(){
  $('surface').style.width=width+'px';
  iframe.width=frameWidth;iframe.height=res;iframe.style.width=frameWidth+'px';iframe.style.height=res+'px';iframe.style.transform=`scale(${width/frameWidth})`;
  $('overlay').style.transform=`scale(${width/1920})`;$('dimensions').textContent=`${frameWidth} × ${res}`;
+ // The Samsung Live-Spiegel always draws the TV's 1920 × 1080 stage.
+ const mirror=$('mirror');mirror.width=1920;mirror.height=1080;mirror.style.width='1920px';mirror.style.height='1080px';mirror.style.transform=`scale(${width/1920})`;
 }
 async function waitReady(){for(let i=0;i<150;i++){if(qa()?.ready()&&design()?.ready())return;await new Promise(r=>setTimeout(r,40));}throw Error('Die Vorschau konnte nicht vollständig geladen werden.');}
 async function loadFrame(){
@@ -152,7 +155,7 @@ window.interact('#selection').draggable({ignoreFrom:'.handle',listeners:{start:b
  patch({width:Math.min(1920,Math.max(8,width)),height:Math.min(1080,Math.max(8,height)),offsetX:(gesture.style.offsetX||0)+x-gesture.rect.x,offsetY:(gesture.style.offsetY||0)+y-gesture.rect.y},{record:false});},end:finishGesture}});
 function layoutIssues(){const issues=[];const all=design().elements();for(const e of all){if(!e.action||!e.visible)continue;const r=e.rect;if(r.x< -2||r.y< -2||r.x+r.width>1922||r.y+r.height>1082){const el=design().element(e.id)?.el;if(el?.closest('.grid-view,.ed-other-view,#phList,#shelf'))continue;issues.push(friendly(e.name)+': liegt teilweise außerhalb des Bildes.');}const el=design().element(e.id)?.el;if(el&&el.scrollWidth>el.clientWidth+4&&!el.querySelector('.mark'))issues.push(friendly(e.name)+': Inhalt braucht mehr Breite.');}return [...new Set(issues)];}
 function showIssues(){const issues=layoutIssues();$('issues').hidden=false;$('issues').replaceChildren();const title=document.createElement('strong');title.textContent=issues.length?issues.length+' Hinweise für diese Ansicht':'Diese Ansicht liegt innerhalb des Bildes.';$('issues').append(title);if(issues.length){const list=document.createElement('ul');issues.forEach(text=>{const li=document.createElement('li');li.textContent=text;list.append(li);});$('issues').append(list);}return issues;}
-function dialog(title,body,onSubmit){$('dialogTitle').textContent=title;$('dialogBody').replaceChildren(body);$('dialogSave').hidden=!onSubmit;$('dialogForm').onsubmit=event=>{event.preventDefault();Promise.resolve(onSubmit?.()).then(()=>$('dialog').close()).catch(report);};$('dialog').showModal();}
+function dialog(title,body,onSubmit,submit='Speichern'){$('dialogTitle').textContent=title;$('dialogBody').replaceChildren(body);$('dialogSave').hidden=!onSubmit;$('dialogSave').textContent=submit;$('dialogForm').onsubmit=event=>{event.preventDefault();Promise.resolve(onSubmit?.()).then(()=>$('dialog').close()).catch(report);};$('dialog').showModal();}
 async function snapshot(){await save();const label=document.createElement('label');label.textContent='Name des Zwischenstands';const input=document.createElement('input');input.maxLength=80;input.required=true;input.placeholder='Zum Beispiel: kleiner Spotify Player';label.append(input);dialog('Zwischenstand speichern',label,async()=>{await request('snapshot',{name:input.value});notice('Zwischenstand gespeichert.');});input.focus();}
 async function versions(){await save();const list=await request('snapshots'),body=document.createElement('div');if(!list.length)body.textContent='Noch keine Zwischenstände gespeichert.';for(const version of list){const row=document.createElement('div');row.className='version';const text=document.createElement('div');text.textContent=version.name;const date=document.createElement('small');date.textContent=version.created;text.append(date);const button=document.createElement('button');button.type='button';button.textContent='Laden';button.onclick=async()=>{try{const result=await request('restore',{id:version.id});remember();restoreContent(result.project);project.ui=result.project.ui;changed();$('dialog').close();await loadFrame();}catch(error){report(error);}};row.append(text,button);body.append(row);}dialog('Zwischenstände',body);}
 let jobTimer;
@@ -173,7 +176,7 @@ window.addEventListener('keydown',event=>{if(document.body.classList.contains('l
 window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
 setInterval(()=>{if(ready&&!loading&&!dragging&&!importing)refresh();},350);
 setInterval(async()=>{if(!ready||loading||dragging||saving||importing)return;try{const state=await request('watch');token=state.token||token;if(state.etag!==etag){if(dirty){conflicted=true;$('conflict').hidden=false;$('conflict').querySelector('span').textContent='Der Entwurf wurde gleichzeitig an anderer Stelle geändert.';}else await boot();}else if(state.source!==source){source=state.source;await loadFrame();notice('Quellcode aktualisiert. Dein Entwurf bleibt erhalten.');}}catch(error){notice(error.message);}},2500);
-window.CleanFrameEditor={get ready(){return ready&&!loading;},get project(){return clone(project);},save,select,patch,layoutIssues,refresh,loadFrame,request,get entries(){return clone(entries);},get selected(){return selected?clone(selected):null;},get liveProject(){return project;},get etag(){return etag;},remember,changed,resize,notice,boot,qa,design,win,report,importTv,showScene};
+window.CleanFrameEditor={get ready(){return ready&&!loading;},get project(){return clone(project);},save,select,patch,layoutIssues,refresh,loadFrame,request,get entries(){return clone(entries);},get selected(){return selected?clone(selected):null;},get liveProject(){return project;},get etag(){return etag;},remember,changed,resize,notice,boot,qa,design,win,report,importTv,showScene,dialog};
 initWorkspace(window.CleanFrameEditor);
 initAddonLab(window.CleanFrameEditor);
 boot().catch(report);

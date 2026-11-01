@@ -1,0 +1,46 @@
+{
+  "v": 1,
+  "errors": {},
+  "hidden": false,
+  "app": {"id": "TestPkg001.CleanTV", "packageId": "TestPkg001", "version": "0.9.0"},
+  "ready": true,
+  "legacy": false,
+  "caps": {"art": false, "home": true, "settings": true, "spotify": true},
+  "context": {"view": "home", "layout": "dock", "state": "compact"},
+  "where": {"view": "home", "settingsGroup": null, "focusAction": "home.app.youtube", "zone": "apps", "wallpaper": "cove"},
+  "state": {
+    "committed": {
+      "bg": "photo", "wall": "cove", "layout": "dock", "apps": "icons", "font": "manrope", "controls": "text",
+      "focus": "glass", "material": "soft", "home": ["youtube", "netflix", "stremio", "rJeHak5zRg.Spotify"], "recent": [],
+      "lastApp": "youtube", "mode": "fixed", "clockFormat": "24h", "dateVisible": true, "spotifyEnabled": true,
+      "spotifySurface": "cover", "spotifyTransparency": 40, "controlsPosition": "auto", "language": "de", "favourites": []
+    },
+    "shown": {"bg": "photo", "wall": "cove", "material": "soft", "font": "manrope"},
+    "appRecords": [{"id": "rJeHak5zRg.Spotify", "appId": "rJeHak5zRg.Spotify", "name": "Spotify", "brand": "spotify"}],
+    "view": "home", "settingsGroup": null, "selected": "youtube", "focusAction": "home.app.youtube", "pending": false,
+    "draft": null, "wallpaperPicker": null,
+    "spotify": {
+      "status": "playing", "title": "Testtitel", "artist": "Testinterpret", "duration": 200000, "position": 50000, "speed": 1,
+      "art": "", "artColor": "#4a6b8a", "artLight": false, "actions": {"previous": true, "toggle": true, "next": true},
+      "deviceName": "Testgerät", "connection": "connected", "permission": true, "webLinked": true, "webApi": "connected", "errorMessage": ""
+    }
+  },
+  "detail": {"addonId": "", "addonTab": ""},
+  "link": {"phase": "idle", "expiresAt": 0, "message": ""},
+  "design": {"version": 1, "rules": []},
+  "addons": {
+    "installed": {
+      "spotify": {"id": "spotify", "name": "Spotify", "kind": "spotify", "version": "1.0.0", "enabled": true},
+      "cleantv-weather": {"id": "cleantv-weather", "name": "Wetter", "kind": "weather", "version": "1.0.0", "enabled": true, "description": "Wetter auf dem Startbildschirm", "author": "CleanTV", "license": "MIT"},
+      "cleantv-wallpapers": {"id": "cleantv-wallpapers", "name": "Hintergründe", "kind": "wallpapers", "version": "1.0.0", "enabled": true, "description": "Zusätzliche Fotos", "author": "CleanTV", "license": "MIT"}
+    },
+    "catalog": [], "busy": false, "error": "", "batch": {"status": "idle", "completed": 0, "total": 0}
+  },
+  "weather": {
+    "place": {"name": "Teststadt", "region": "Testregion", "detail": "", "country": "DE", "lat": 50.1, "lon": 8.6, "timezone": "Europe/Berlin", "offset": 3600},
+    "show": {"name": true, "temp": true, "range": true, "wind": true, "icon": true},
+    "forecast": {"lat": 50.1, "lon": 8.6, "at": 1793000000000, "offset": 3600, "temp": 7.3, "code": 3, "wind": 12, "gusts": 20, "precip": 0, "cloud": 90, "day": 1, "windy": false, "days": [{"date": "2026-11-01", "max": 9.4, "min": 2.1}]},
+    "failures": 0, "error": "", "busy": false
+  },
+  "walls": {"message": "", "limit": 10, "entries": []}
+}

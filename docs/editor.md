@@ -2,7 +2,8 @@
 
 Open `CleanTV Editor.command` with a double click. The editor runs at
 http://127.0.0.1:4797/editor/ and uses the actual packaged UI. The draft uses
-synthetic data; the separate Live view receives continuous video from the configured TV.
+synthetic data; the separate Live view receives continuous video from a configured Android TV,
+or a redrawn Live-Spiegel from a Samsung TV (see "Samsung (Tizen)" below).
 Nothing is automatically installed. Keep its terminal window open while using
 it; closing that process stops the local server. A second launch reuses it.
 
@@ -197,6 +198,77 @@ library with the actual visible rectangles. Existing list scroll, slider and
 Back behavior is retained. The native QR screen reads the same packaged design
 file using `DesignOverrides`; its rules have `view: qr` and `layout: *`.
 
+## Samsung (Tizen): Live-Spiegel and import
+
+Without `.local/editor/tv.json` (ADB), `npm run editor` uses the Samsung TV whose IPv4
+address is in `.local/device.json` (`--tv auto`; `--tv android` or `--tv tizen` forces one).
+It needs Tizen Studio's `sdb` in the SDK folder that `.local/signing.json` names
+(`<sdk_path>/tools/sdb`, `sdb.exe` on Windows), the signed CleanTV installed with the
+identity selected there (`scripts/local_config.py`), developer mode on the TV for this
+computer (`docs/agent-tv-setup-guide.md`) and both devices in the same network.
+
+**Finding the TV.** Status runs `sdb devices` and, only when the TV is not listed,
+`sdb connect <address>:26101`. It reports *TV nicht erreichbar*, *TV verbunden ·
+Debug-Modus aus*, *Debug-Modus an* and *CleanTV bereit*. It is cached for ten seconds,
+runs only while the editor tab is visible and never starts or restarts anything.
+
+**Debug mode is an explicit step that restarts CleanTV.** The page inspector exists only
+after a debug launch. **CleanTV im Debug-Modus neu starten** (TV panel, or the Live view
+while debug mode is off) first shows a warning and needs confirmation. It then runs
+`sdb shell 0 kill <package>` and `sdb shell 0 debug <app> 300`: CleanTV closes on the TV
+and starts again, so the TV picture is gone for a moment. Settings, add-ons and the Spotify
+sign-in stay. Without the timeout argument, or while CleanTV still runs, the TV answers
+`closed`; the editor reports that and forwards nothing. The reported port is forwarded to
+a free local port and checked through `/json` (a page at `file:///index.html`). The forward
+is remembered in `.local/editor/tizen-inspector.json`, so a restarted editor reuses an
+inspector that still runs. Debug mode ends when CleanTV is closed on the TV. Announce the
+restart to the owner and confirm the visible result with them (AGENTS.md).
+
+**Live-Spiegel, not video.** The TV's Chrome 47 page inspector sends no pixels:
+`Page.captureScreenshot` never answers and `Page.startScreencast` delivers no frames.
+Live therefore redraws the TV. `scripts/editor-tizen-cdp.mjs` keeps one raw CDP WebSocket
+(no Playwright) and evaluates the fixed expression `scripts/editor-tizen-mirror.js` about
+once a second. It emits a state only when the result changed. The editor server relays it
+by long polling (`GET /api/editor/tv/mirror`, same origin and host rules as the other
+routes) and ends the reader about six seconds after the last visible tab stopped asking
+(Draft tab, hidden tab, closed page). The editor draws the state with the Samsung code path
+of the real page (`editor/tv-mirror.js`): view and settings path, focus, preferences,
+design, add-ons, weather, add-on wallpapers and the Spotify card. The picture is labelled
+*Nachgezeichnet vom Zustand des Fernsehers – kein Kamerabild*, takes no input and never
+changes the draft.
+
+The expression is ES5 and linted with the app rules. It calls only getters (`ShoreQA.state`,
+`where`, `ready` and `actions`, `CleanFrameDesign.get`, `context` and `ready`, and the add-on
+state getters) and returns selected fields. It never calls a setter or navigation, and never
+reads web storage, Spotify credentials, the sign-in QR or code, or device identifiers. The
+browser cannot supply an expression, address, port or command. Mirrored values (song titles,
+the weather place) stay in the memory of the server and the browser tab. They are never
+written to the draft, snapshots or logs, and are dropped when Live closes.
+
+Limits of the mirror:
+
+- It is drawn by the local source. If the TV runs another CleanTV version, the caption says
+  so, and details can differ.
+- The old engine is emulated (`?legacy=1`, custom properties off). Fonts and rasterisation
+  still come from this computer's browser.
+- Not mirrored: text typed in a keyboard view (place search), the app being moved in
+  *Apps auf Home*, scroll positions, app icons (monograms are shown), the full *Alle Apps*
+  catalogue (only Home and recent apps), the Spotify QR code, and the exact Spotify progress
+  (extrapolated, can lag by about two seconds).
+- When the TV focuses the collapsed Spotify card, the mirror may expand it for up to 2.5 s.
+- The weather widget shows the TV's forecast. Its settings line can show *Wird aktualisiert …*,
+  because the mirror never contacts Open-Meteo.
+- The clock uses this computer's time.
+- The inspector serves one client. Close Chrome DevTools on the TV page first.
+
+**Import.** *TV-Stand holen* and *Vom TV übernehmen* (in the Live-Spiegel) use the same fixed
+expression. They reuse the running mirror; otherwise they read once. The import contains the
+committed preferences, design, Home app records, installed add-ons (weather and wallpapers
+included) and add-on wallpaper entries (metadata only). The draft then previews with the
+Samsung page and sample media (`tvSource.platform` is `tizen`), so imported Home apps and
+add-on wallpapers stay intact. **Für TV vorbereiten** remains Android-only. Install a
+Samsung build with `npm run package` and `npm run tv:install` (docs/development.md).
+
 ## Preparing and transferring a TV version
 
 **TV-Stand holen** reads the running CleanFrame WebView through the configured
@@ -252,6 +324,11 @@ installation or credential-import endpoint. The assistant must:
 
 `npm run check:editor` runs isolated browser tests with a temporary draft store.
 `python3 scripts/test-editor-tools.py` checks preference conflicts and merging.
+`python3 scripts/test-editor-tizen.py` checks the Samsung backend against a fake `sdb` and a
+fake Chrome 47 inspector: discovery, the debug restart (including `closed`), `/json` target
+choice, change-only mirror output, stopping when unused, import and the fixed expression.
+`check-editor-mirror.mjs` (part of `check:editor`) runs that expression against the real app
+and drives the Live-Spiegel, the restart confirmation and a Samsung import with a fake feed.
 `python3 scripts/test-editor-workspace.py` checks draft tool validation, concurrent
 edits, TV status, native capture metadata, native packet framing and shared capture cleanup. Browser
 workspace tests cover 4K pixel conversion, 1:1 viewing, guides, distances, per-side
