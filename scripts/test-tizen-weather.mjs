@@ -600,6 +600,63 @@ test('failures retry after 1, 2, 5, 10 and 15 minutes, then every 15; success an
   assert.equal(h.state().due - h.state().forecast.at, 15 * MIN + 30000);
 });
 
+test('a forecast request that ends inside send() (a throw or a synchronous error) leaves refreshes running', () => {
+  for (const mode of ['throw', 'error']) {
+    const h = harness({ weather: withPlace(cached(T0 - 20 * MIN)) });
+    const proto = h.window.XMLHttpRequest.prototype, send = proto.send;
+    proto.send = function () { proto.send = send; this.done = true; if (mode === 'throw') throw new Error('Blocked'); this.onerror(); };
+    h.render();
+    assert.equal(h.xhrs.length, 1, mode);
+    assert.deepEqual([h.state().busy, h.state().failures], [false, 1], mode + ': not stuck as running');
+    assert.match(h.settings.sections('de')[0].reason, /^Keine Verbindung zum Wetterdienst\. Stand \d\d:\d\d$/, mode);
+    h.advance(MIN);
+    assert.equal(h.xhrs.length, 2, mode + ': the retry after a minute goes out');
+    h.serve();
+    assert.deepEqual([h.state().busy, h.state().failures, h.state().forecast.at], [false, 0, T0 + MIN], mode);
+    h.advance(16 * MIN);
+    assert.equal(h.xhrs.length, 3, mode + ': and the regular schedule after it');
+  }
+});
+
+test('a fetch time ahead of the TV clock has an unknown age: dashes, a refresh at once, timers in short steps', () => {
+  const DAY = 24 * 60 * MIN;
+  const timed = h => { const delays = [], set = h.window.setTimeout; h.window.setTimeout = (fn, ms) => { delays.push(ms || 0); return set(fn, ms); }; return delays; };
+  // The TV starts 30 days behind the clock that stored the forecast (no time sync yet after a power cut).
+  let h = harness({ weather: withPlace(cached(T0 + 30 * DAY)) });
+  let delays = timed(h);
+  let w = h.render();
+  assert.deepEqual([w.name, w.temp, w.icon, w.wind, w.off.length], ['Bonn', '–', '', '– km/h', 0], 'not shown as current, slots kept');
+  assert.match(w.note, /^Stand \d\d:\d\d · Open-Meteo\.com$/);
+  assert.equal(h.xhrs.length, 1, 'refreshed at once');
+  h.last().fail();
+  h.advance(MIN);
+  assert.equal(h.xhrs.length, 2, 'a failure retries after a minute as usual');
+  h.serve();
+  assert.equal(h.state().forecast.at, T0 + MIN, 'the new data carry TV time');
+  assert.equal(h.render().temp, '8°');
+  for (let i = 0; i < 4; i++) { h.advance(15 * MIN + 30000); assert.equal(h.pending().length, 1, 'then every 15 minutes'); h.serve(); }
+  assert.equal(h.xhrs.length, 6);
+  assert.ok(delays.every(ms => ms <= 16 * MIN), JSON.stringify(delays));
+  // Within five minutes it is ordinary jitter between clocks: shown, and due in capped steps.
+  h = harness({ weather: withPlace(cached(T0 + 4 * MIN)) });
+  delays = timed(h);
+  assert.equal(h.render().temp, '8°');
+  assert.equal(h.xhrs.length, 0);
+  h.advance(19 * MIN + 29999);
+  assert.equal(h.xhrs.length, 0);
+  h.advance(1);
+  assert.equal(h.xhrs.length, 1, 'due 15 minutes and 30 s after the stored time');
+  assert.ok(delays.length > 1 && delays.every(ms => ms <= 16 * MIN), JSON.stringify(delays));
+  // The clock goes back after a failed attempt: the backoff does not wait for the old time.
+  h = harness({ weather: withPlace(cached(T0 - 20 * MIN)) });
+  h.render();
+  h.last().fail();
+  assert.equal(h.state().failures, 1);
+  h.clock.now -= 30 * DAY;
+  h.render();
+  assert.equal(h.xhrs.length, 2, 'retried at once');
+});
+
 test('responses are checked: error flag, shape, size and address', () => {
   const bad = [
     { json: { error: true, reason: 'Invalid' } },

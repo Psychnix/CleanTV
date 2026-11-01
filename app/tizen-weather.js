@@ -7,7 +7,7 @@
   var ID = 'cleantv-weather', KIND = 'weather', PREFIX = 'cleantv.weather.v1', VIEW = 'cleantv.weather.keyboard';
   var FORECAST = 'https://api.open-meteo.com/v1/forecast', GEOCODING = 'https://geocoding-api.open-meteo.com/v1/search', PLZ = 'https://openplzapi.org/';
   var CURRENT = 'temperature_2m,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,cloud_cover,is_day', DAILY = 'temperature_2m_max,temperature_2m_min';
-  var MINUTE = 60000, PERIOD = 15 * MINUTE, RETURN_AGE = 10 * MINUTE, STALE = 45 * MINUTE, EXPIRED = 180 * MINUTE, AWAY_GAP = 75000;
+  var MINUTE = 60000, PERIOD = 15 * MINUTE, RETURN_AGE = 10 * MINUTE, STALE = 45 * MINUTE, EXPIRED = 180 * MINUTE, AWAY_GAP = 75000, SKEW = 5 * MINUTE;
   var BACKOFF = [1, 2, 5, 10, 15], TIMEOUT = 15000, FORECAST_LIMIT = 16384, SEARCH_LIMIT = 262144, PLZ_LIMIT = 65536;
   var SHOW = ['name', 'temp', 'range', 'wind', 'icon'], SHOW_LABELS = { name: 'Place name', temp: 'Current temperature', range: 'High and low', wind: 'Wind', icon: 'Weather symbol' };
   var PACKAGE_FIELDS = { api: 1, id: 1, name: 1, version: 1, kind: 1, description: 1, author: 1, license: 1 };
@@ -163,16 +163,21 @@
     var stage = document.getElementById('stage');
     return !document.hidden && !(stage && /(^|\s)is-sheet(\s|$)/.test(stage.className));
   }
+  /* A time later than the clock (a TV that starts before its clock is set again, for example after a
+     power cut) has an unknown age: it is due at once, and the data count as expired. */
+  function future(ms, t) { return ms > t + SKEW; }
   function due() {
-    if (failures) return lastAttempt + BACKOFF[Math.min(failures, BACKOFF.length) - 1] * MINUTE;
-    return forecast ? forecast.at + PERIOD + jitter : 0;
+    var t = now();
+    if (failures) return future(lastAttempt, t) ? 0 : lastAttempt + BACKOFF[Math.min(failures, BACKOFF.length) - 1] * MINUTE;
+    return forecast && !future(forecast.at, t) ? forecast.at + PERIOD + jitter : 0;
   }
   function clearTimer() { if (timer) { window.clearTimeout(timer); timer = 0; } }
   function stop() { clearTimer(); if (inflight) { inflight.abort(); inflight = null; } }
+  // Capped steps: browsers fire delays beyond 2^31 ms at once; tick() plans the rest again.
   function plan() {
     clearTimer();
     if (!active() || !place || inflight) return;
-    timer = window.setTimeout(tick, Math.max(0, due() - now()));
+    timer = window.setTimeout(tick, Math.min(PERIOD + MINUTE, Math.max(0, due() - now())));
   }
   function tick() {
     timer = 0;
@@ -182,12 +187,14 @@
     if (now() >= due()) refreshNow(); else plan();
   }
   function refreshNow() {
-    var p = place;
+    var p = place, finished = false, handle;
     if (!active() || !p || inflight) return false;
     clearTimer();
     lastAttempt = now();
-    inflight = get(forecastUrl(p), FORECAST_LIMIT, function (error, data) {
+    // A request can end inside send() (a throw or a synchronous error event); its handle is then dead.
+    handle = get(forecastUrl(p), FORECAST_LIMIT, function (error, data) {
       var next = null;
+      finished = true;
       inflight = null;
       if (p !== place) { plan(); return; }
       if (!error) { try { next = parseForecast(data, forecast && forecast.windy); } catch (e) { error = 'data'; } }
@@ -199,6 +206,7 @@
       saveError = !save(place, show, forecast);
       plan(); redraw();
     });
+    if (!finished) inflight = handle;
     return true;
   }
   /* Every Home render and every return to the app: cheap unless a refresh is due. Back on Home after
@@ -290,7 +298,7 @@
   function degrees(v) { var n = Math.round(v) || 0; return (n < 0 ? '−' + -n : String(n)) + '°'; }
   function clock(ms) { var d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
   function model(lang) {
-    var t = now(), f = forecast, age = f ? t - f.at : Infinity, fresh = !!f && age <= EXPIRED, day = f ? today(f.days, t, f.offset) : null;
+    var t = now(), f = forecast, age = f && !future(f.at, t) ? t - f.at : Infinity, fresh = !!f && age <= EXPIRED, day = f ? today(f.days, t, f.offset) : null;
     if (!SHOW.some(function (key) { return show[key]; })) return null;
     return {
       name: place ? place.name : tr(lang, 'Choose a place'),
