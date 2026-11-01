@@ -1429,11 +1429,11 @@
     var t = top();
     // An add-on settings provider may take a key before the host does.
     var hooked = t.id === 'appearance' && t.group === 'addon-settings' && addonSettingsKey(t, k);
-    // OK first reveals hidden controls; it never fires an invisible transport button.
+    // OK first reveals hidden controls; it never fires an invisible transport button. A held card opens Spotify at once.
     var spatial = !hooked && ['left', 'right', 'up', 'down'].indexOf(k) >= 0 && !t.lifted
       && !(t.id === 'appearance' && t.f.action === 'spotify.transparency' && (k === 'left' || k === 'right'));
     var moved = spatial && window.CleanFrameDesign && window.CleanFrameDesign.navigate(k, focusedAction(), focusElement);
-    if (!hooked && !moved && !(t.id === 'home' && t.f.zone === 'spotify' && !spotifyAwake && k === 'ok')) V[t.id].key(t, k);
+    if (!hooked && !moved && !(t.id === 'home' && t.f.zone === 'spotify' && !spotifyAwake && k === 'ok' && !spotifyState.held)) V[t.id].key(t, k);
     spotifyActivity();
     norm();
     render();
@@ -1585,6 +1585,7 @@
     if (spotifyState.errorMessage) return spotifyState.errorMessage;
     if (spotifyState.webApi === 'unlinked') return translate(ANDROID ? 'Sign in with QR to enable controls.' : 'Sign in with QR to show and control your playback.');
     if (spotifyState.connection === 'unavailable') return translate('Spotify could not connect. Open Spotify once, then return Home.');
+    if (spotifyState.held) return translate('Continue in Spotify');
     return spotifyState.status === 'playing' || spotifyState.status === 'paused' ? spotifyState.webApi === 'connected' ? translate('Spotify connected. Controls use your active device.') : translate('Connected to your Spotify session.') : translate('Ready. Start Spotify on a device using the same account.');
   }
   function spotifyKey(t, key) {
@@ -1603,6 +1604,9 @@
         if (spotifyState.actions && spotifyState.actions[spotifyCommands[candidate]]) { f.p = candidate; break; }
         candidate += direction;
       }
+    } else if (key === 'ok' && spotifyState.held && (index === 1 || !spotifyAwake)) {
+      // Samsung only: the TV's own Spotify app was paused by CleanTV and continues the held track.
+      perform('Spotify', function (done) { FrameDevice.launchApp(SPOTIFY_APP, done); });
     } else if (key === 'ok' && spotifyState.actions && spotifyState.actions[spotifyCommands[index]]) {
       FrameDevice.spotify.control(spotifyCommands[index], function (error) {
         if (error) { spotifyState.errorMessage = error.message; renderSpotify(); }
@@ -1648,12 +1652,15 @@
     $('spotifyCompact').setAttribute('aria-hidden', !!expanded);
     $('spotifyCompact').classList.toggle('is-focus', !!visible && t.f.zone === 'spotify' && !expanded);
     if (!visible) { clearTimeout(spotifyTimer); spotifyTimer = 0; return; }
+    // A held card (tizen-spotify.js) names its one action instead of the vanished device.
+    var held = !!spotifyState.held, source = held ? translate('Continue in Spotify') : spotifyState.deviceName || '';
+    $('spotifyCompact').setAttribute('aria-label', translate(held ? 'Continue in Spotify' : 'Spotify player. Select to show controls.'));
     $('spotifyTitle').textContent = spotifyState.title || '';
     $('spotifyArtist').textContent = spotifyState.artist || '';
     $('spotifyCompactTitle').textContent = spotifyState.title || '';
     $('spotifyCompactArtist').textContent = spotifyState.artist || '';
-    $('spotifySource').textContent = spotifyState.deviceName || '';
-    $('spotifySource').hidden = !!spotifyState.errorMessage || !spotifyState.deviceName;
+    $('spotifySource').textContent = source;
+    $('spotifySource').hidden = !!spotifyState.errorMessage || !source;
     ['spotify', 'spotifyCompact'].forEach(function (prefix) {
       var cover = $(prefix + 'Cover');
       if (cover.getAttribute('src') !== art) { cover.hidden = !art; $(prefix + 'Fallback').hidden = !!art; if (art) cover.setAttribute('src', art); else cover.removeAttribute('src'); }
@@ -1662,7 +1669,7 @@
     $('spotifyError').textContent = translate(spotifyState.errorMessage || '');
     $('spotifyOpen').classList.toggle('is-focus', !!expanded && t.f.p === 3);
     Array.prototype.forEach.call(spotifyControls.children, function (button, index) {
-      var label = index === 0 ? translate('Previous track') : index === 2 ? translate('Next track') : spotifyState.status === 'playing' ? translate('Pause') : translate('Play');
+      var label = index === 0 ? translate('Previous track') : index === 2 ? translate('Next track') : held ? translate('Continue in Spotify') : spotifyState.status === 'playing' ? translate('Pause') : translate('Play');
       var supported = !!(spotifyState.actions && spotifyState.actions[spotifyCommands[index]]);
       button.className = 'spotify-button' + (expanded && t.f.p === index ? ' is-focus' : '') + (!supported ? ' is-disabled' : '');
       button.setAttribute('aria-label', label); button.setAttribute('aria-disabled', !supported);

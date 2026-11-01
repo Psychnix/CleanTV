@@ -31,6 +31,8 @@
   // Backoff: 429 without a readable Retry-After doubles from 30 s to 5 min; 5xx and network errors from 10 s to 60 s.
   var LIMITED = 30000, LIMITED_MAX = 300000, FAILED = 10000, FAILED_MAX = 60000, DENIED = 60000, GAP = 1000;
   var PAIR_POLL = 2000, PAIR_TTL = 600, REFRESH_EARLY = 60000, TIMEOUT = 8000, SLOW = 15000, TEXT_LIMIT = 262144;
+  // A held card: the vanish must come within 60 s after CleanTV became visible; 30 min of nothing playing end it.
+  var HOLD_WINDOW = 60000, HOLD_MAX = 1800000;
   var FORM = { 'Content-Type': 'application/x-www-form-urlencoded' }, PLAIN = { 'Content-Type': 'text/plain;charset=UTF-8' };
   var SECRET = /^[\x21-\x7e]{1,4096}$/, PAIR_ID = /^[a-f0-9]{32}$/;
   var IMAGE = /^https:\/\/(?:i\.scdn\.co|image-cdn-(?:ak|fa)\.spotifycdn\.com)\/image\/([a-f0-9]{40})$/;
@@ -44,7 +46,7 @@
     denied: "Spotify denied access. Check Premium and the Developer app's users.", busy: 'Spotify is busy. Try again later.',
     device: 'No active Spotify device supports this control.', gone: 'Spotify no longer has an active device.',
     apply: 'Spotify could not apply the request. Try again later.', connect: 'Spotify could not connect. Check your network or sign in again.',
-    signin: 'Sign in with QR to enable controls.', signout: 'Could not sign out. Please try again.'
+    signin: 'Sign in with QR to enable controls.', signout: 'Could not sign out. Please try again.', held: 'Continue in Spotify'
   };
   /* Status 0 is a failed request (TLS, DNS, access policy), -1 a timeout. Naming the host tells which hop broke. */
   function offline(status, host) { return status === -1 ? host + ' did not respond in time.' : 'Could not reach ' + host + ' (no connection, certificate or access policy).'; }
@@ -118,7 +120,8 @@
     s.connection = 'connected'; s.permission = true; s.webLinked = !!refreshToken;
     s.webApi = refreshToken || webApi === 'reauth' || webApi === 'signout_failed' ? webApi : 'unlinked';
     s.errorMessage = problem || notice || '';
-    if (!linked || blocked) s.actions = { previous: false, toggle: false, next: false };
+    // A held card's one action opens the Spotify app, so Premium does not matter for it.
+    if (!linked || blocked && !player.held) s.actions = { previous: false, toggle: false, next: false };
     return s;
   }
   /* The progress bar extrapolates; a pure position update is sent only when it drifts by 2 s or more. */
@@ -200,7 +203,25 @@
   /* ---------- Playback polling (only while main.js observes) ---------- */
   var observing = false, timer = 0, polling = null, failures = 0, limits = 0, idleSince = 0, holdUntil = 0, lastPoll = 0, endKey = '';
   var art = { want: '', ready: '', loading: '', failed: '' };
+  // seen: the last 200 with an item {at, tv, playing, position}; shownAt: when CleanTV last became visible.
+  var seen = null, shownAt = hidden() ? 0 : now();
   function halt() { window.clearTimeout(timer); timer = 0; if (polling) { polling.abort(); polling = null; } }
+  /* Nothing playing; also ends a held card and forgets the last state. */
+  function clearPlayer() { player = idle(); deviceId = ''; art.want = ''; seen = null; }
+  /* Unverified: the device type the Samsung Spotify app reports for itself. Spotify names TVs "TV";
+     docs/addons.md asks to confirm it on the TV. Every other type (phone, speaker, computer) is never held. */
+  var THIS_TV = 'tv';
+  function onThisTv(d) { return typeof d.type === 'string' && d.type.toLowerCase() === THIS_TV; }
+  /* Tizen pauses the Spotify app on this TV when CleanTV comes to the front, and its Connect device
+     vanishes a few seconds later. If the last state came from this TV during this visit and the vanish
+     follows the return within 60 s, the card keeps that track as paused and main.js opens Spotify on OK. */
+  function holdable() { return !!seen && seen.tv && seen.at >= shownAt && now() - shownAt <= HOLD_WINDOW; }
+  function hold() {
+    // player still holds the last mapped track; a playing one is advanced to the vanish.
+    var position = seen.position + (seen.playing ? now() - seen.at : 0);
+    player.status = 'paused'; player.position = player.duration ? Math.min(position, player.duration) : position;
+    player.actions = { previous: false, toggle: true, next: false }; player.held = true;
+  }
   function schedule(delay) {
     window.clearTimeout(timer); timer = 0;
     if (!observing || !refreshToken || webApi === 'reauth' || !allowed()) return;
@@ -219,8 +240,8 @@
     else if (said && now() >= saidUntil) notice = said = '';
   }
   function fail(f) {
-    if (f.kind === 'reauth') { webApi = 'reauth'; problem = M.again; player = idle(); deviceId = ''; halt(); }
-    else if (f.kind === 'off') { player = idle(); halt(); }
+    if (f.kind === 'reauth') { webApi = 'reauth'; problem = M.again; clearPlayer(); halt(); }
+    else if (f.kind === 'off') { clearPlayer(); halt(); }
     else if (f.kind === 'stale') schedule(0);
     else if (f.kind === 'busy') { webApi = 'rate_limited'; problem = f.message; schedule(limited(f.retry)); }
     else { webApi = 'unavailable'; problem = f.message; schedule(backoff()); }
@@ -244,9 +265,11 @@
     else if (status === 429) { webApi = 'rate_limited'; problem = M.busy; schedule(limited(seconds(xhr))); }
     else if (status >= 500) { webApi = 'unavailable'; problem = M.busy; schedule(backoff()); }
     else if (status === 204 || status === 200 && body && !item) {
-      // Nothing playing: 30 s, then 60 s after five minutes.
-      healthy(); player = idle(); deviceId = ''; art.want = '';
+      // Nothing playing: 30 s, then 60 s after five minutes. A held card stays for 30 minutes of this.
+      healthy(); deviceId = '';
       if (!idleSince) idleSince = now();
+      if (!player.held && holdable()) hold();
+      else if (!player.held || now() - idleSince >= HOLD_MAX) clearPlayer();
       schedule(now() - idleSince >= IDLE_AFTER ? IDLE_LONG : IDLE);
     } else if (status === 200 && body) { healthy(); idleSince = 0; schedule(show(body, item)); }
     else { webApi = 'unavailable'; problem = M.apply; schedule(backoff()); }
@@ -268,6 +291,7 @@
       actions: { previous: !restricted && !dis.skipping_prev, toggle: !restricted && !(playing ? dis.pausing : dis.resuming), next: !restricted && !dis.skipping_next },
       deviceName: text(d.name, 120)
     };
+    seen = { at: now(), tv: onThisTv(d), playing: playing, position: player.position };
     // While playing, poll once at the end of each track to catch the next one. A track still at its end
     // after that poll (a stalled device keeps a stale playing state) falls back to 5 s.
     if (!playing) { endKey = ''; return PAUSED; }
@@ -319,6 +343,8 @@
     var finish = typeof done === 'function' ? done : function () {}, method, path;
     if (command !== 'previous' && command !== 'toggle' && command !== 'next') { finish({ message: M.device }); return; }
     if (!allowed() || !refreshToken || webApi === 'reauth') { finish({ message: M.signin }); return; }
+    // The held track has no Connect device left; only the Spotify app itself can continue it.
+    if (player.held) { finish({ message: M.held }); return; }
     if (blocked) { finish({ message: M.premium }); return; }
     if (!deviceId || !player.actions[command]) { finish({ message: M.device }); return; }
     method = command === 'toggle' ? 'PUT' : 'POST';
@@ -445,8 +471,8 @@
     if (session) end(session, { phase: 'idle' });
     halt();
     try { STORE.clear(PREFIX); } catch (e) { webApi = 'signout_failed'; publish(); finish({ message: M.signout }); return; }
-    refreshToken = null; access = null; deviceId = ''; blocked = false; problem = ''; notice = '';
-    player = idle(); webApi = 'unlinked'; failures = 0; limits = 0; holdUntil = 0; idleSince = 0;
+    refreshToken = null; access = null; blocked = false; problem = ''; notice = '';
+    clearPlayer(); webApi = 'unlinked'; failures = 0; limits = 0; holdUntil = 0; idleSince = 0;
     publish(); finish(null);
   }
 
@@ -454,13 +480,15 @@
   window.addEventListener('cleanframe:addons', function () {
     if (allowed()) return;
     if (session) end(session, { phase: 'cancelled' });
-    halt(); player = idle(); deviceId = ''; publish();
+    halt(); clearPlayer(); publish();
   });
   if (window.document && typeof window.document.addEventListener === 'function') window.document.addEventListener('visibilitychange', function () {
-    if (!hidden()) return;
+    if (!hidden()) { shownAt = now(); return; }
     // Leaving the app or standby cancels sign-in, as on Android; main.js also stops observing.
     if (session) end(session, { phase: 'cancelled' });
     halt();
+    // A hold belongs to one visit: meanwhile the Spotify app may resume, elsewhere too.
+    if (player.held) { clearPlayer(); publish(); } else seen = null;
   });
 
   device.capabilities = device.capabilities || {};

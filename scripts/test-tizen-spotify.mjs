@@ -117,6 +117,7 @@ function harness({ local = storage(), tizen = true, platform, random = [], hidde
     state: () => plain(window.FrameDevice.spotify.state()), link: () => plain(window.FrameDevice.spotify.link('state')),
     last: () => xhrs[xhrs.length - 1], to: url => xhrs.filter(x => x.url === url || x.url.split('?')[0] === url), open: () => xhrs.filter(x => x.sent && !x.done && !x.aborted),
     hide() { document.hidden = true; (docListeners.visibilitychange || []).forEach(fn => fn()); },
+    show() { document.hidden = false; (docListeners.visibilitychange || []).forEach(fn => fn()); },
     spotifyEvents: () => events.filter(e => e.type === 'cleanframe:spotify').map(e => e.detail),
     timers: () => timers.slice()
   });
@@ -158,6 +159,25 @@ function serving(player, options) {
 }
 const gets = h => h.xhrs.filter(x => x.url === POLL);
 const gaps = list => list.slice(1).map((x, i) => x.at - list[i].at);
+/* The Samsung Spotify app on this TV as a Connect device (the type string is unverified on the owner's TV). */
+const TV = { id: 'tv-1', is_active: true, is_restricted: false, name: 'Samsung TV', type: 'TV' };
+const HELD = { previous: false, toggle: true, next: false };
+/* A linked TV observing from its start; every request is answered with `h.reply` (respond() options). */
+function scripted(reply, options) {
+  const h = serving(() => h.reply, options);
+  h.reply = reply;
+  h.spotify.observe(true); h.flush();
+  return h;
+}
+/* Playback on the TV itself, then the Connect device vanishes at the next poll: the hold. */
+function vanished(patch = {}, after = 5000) {
+  const h = scripted({ body: playing({ device: TV, ...patch }) });
+  h.reply = { status: 204 };
+  h.advance(after);
+  assert.equal(h.state().held, true, 'held');
+  return h;
+}
+const card = s => ({ status: s.status, title: s.title, artist: s.artist, deviceName: s.deviceName, duration: s.duration, position: s.position, actions: s.actions, held: s.held });
 
 test('outside Tizen and on Android the adapter stays away', () => {
   for (const h of [harness({ tizen: false }), harness({ platform: 'android' })]) {
@@ -701,6 +721,147 @@ test('mapping: titles, artists, episodes, disallows and the 300 px cover from i.
   h.advance(5000);
   h.last().respond({ body: { device: { id: 'dev-1' }, is_playing: false, item: null, currently_playing_type: 'ad' } }); h.flush();
   assert.equal(h.state().status, 'idle', 'no item hides the card');
+});
+
+/* Tizen pauses the Samsung Spotify app when CleanTV comes to the front; its Connect device then vanishes. */
+test('hold: a TV device that vanishes soon after CleanTV came to the front stays as a paused card', () => {
+  const h = scripted({ body: playing({ device: TV }) });
+  assert.equal(h.state().status, 'playing');
+  assert.equal('held' in h.state(), false, 'no held field while Spotify reports the track');
+  h.images[0].load(); h.flush();
+  h.reply = { status: 204 };
+  h.advance(5000);
+  const s = h.state();
+  assert.deepEqual(card(s), { status: 'paused', title: 'QA Track', artist: 'Artist A, Artist B', deviceName: 'Samsung TV', duration: 200000, position: 15000, actions: HELD, held: true },
+    'the last track, paused at the moment it vanished');
+  assert.equal(s.art, 'https://i.scdn.co/image/' + COVER, 'the loaded cover stays');
+  assert.deepEqual([s.webApi, s.errorMessage], ['connected', '']);
+  assert.equal(h.spotifyEvents().slice(-1)[0].held, true, 'main.js is told');
+  // Polling continues at the idle cadence; the frozen position sends no further event.
+  const events = h.spotifyEvents().length;
+  h.advance(60000);
+  assert.deepEqual(gaps(gets(h)).slice(-3), [5000, 30000, 30000]);
+  assert.equal(h.spotifyEvents().length, events);
+  assert.deepEqual(card(h.state()), card(s));
+  // A 200 without an item is nothing playing too; the device type is compared without case.
+  for (const [reply, type] of [[{ body: { device: TV, is_playing: false, item: null } }, 'TV'], [{ status: 204 }, 'tv'], [{ status: 204 }, 'Tv']]) {
+    const x = scripted({ body: playing({ device: { ...TV, type } }) });
+    x.reply = reply; x.advance(5000);
+    assert.deepEqual([x.state().status, x.state().held], ['paused', true], type + ' ' + JSON.stringify(reply));
+  }
+});
+
+test('hold: no hold for a phone, a speaker, a computer or a device without a type', () => {
+  for (const type of ['Smartphone', 'Speaker', 'Computer', 'CastVideo', '', undefined]) {
+    const h = scripted({ body: playing({ device: { ...TV, type } }) });
+    h.reply = { status: 204 }; h.advance(5000);
+    const s = h.state();
+    assert.deepEqual([s.status, s.title, 'held' in s], ['idle', '', false], String(type));
+  }
+});
+
+test('hold: only within 60 s after CleanTV became visible', () => {
+  for (const [at, status] of [[60000, 'paused'], [65000, 'idle']]) {
+    const h = scripted({ body: playing({ device: TV }) });
+    h.advance(at - 5000);
+    h.reply = { status: 204 }; h.advance(5000);
+    assert.equal(h.state().status, status, 'vanished ' + at + ' ms after the start');
+  }
+  // The window starts again whenever CleanTV becomes visible, not only at the start.
+  const h = scripted({ body: playing({ device: TV }) });
+  h.hide(); h.spotify.observe(false); h.advance(120000);
+  h.show(); h.spotify.observe(true); h.flush();
+  assert.equal(h.state().status, 'playing');
+  h.reply = { status: 204 }; h.advance(5000);
+  assert.deepEqual([h.state().status, h.state().held], ['paused', true], 'held 5 s after CleanTV came back');
+});
+
+test('hold: never without a TV state seen since CleanTV became visible', () => {
+  // Nothing seen at all.
+  let h = scripted({ status: 204 });
+  assert.equal(h.state().status, 'idle');
+  // A TV state from before CleanTV was hidden does not count.
+  h = scripted({ body: playing({ device: TV }) });
+  h.hide(); h.spotify.observe(false); h.advance(10000);
+  h.reply = { status: 204 };
+  h.show(); h.spotify.observe(true); h.flush();
+  assert.deepEqual([h.state().status, 'held' in h.state()], ['idle', false]);
+  // A phone state in between replaces the TV state.
+  h = scripted({ body: playing({ device: TV }) });
+  h.reply = { body: playing({ device: { ...TV, id: 'phone-1', type: 'Smartphone' } }) }; h.advance(5000);
+  h.reply = { status: 204 }; h.advance(5000);
+  assert.equal(h.state().status, 'idle');
+});
+
+test('hold: the position freezes at the last one, advanced to the vanish while playing, at most the duration', () => {
+  let h = vanished({ is_playing: false, progress_ms: 42000 }, 15000);
+  assert.deepEqual([h.state().status, h.state().position], ['paused', 42000], 'paused: exactly the last position');
+  h = vanished({ progress_ms: 61000 });
+  assert.equal(h.state().position, 66000, 'playing: advanced by the 5 s to the vanish');
+  // Near the end of the track the end poll comes 750 ms after it: capped at the duration.
+  h = vanished({ progress_ms: 198000 }, 2750);
+  assert.deepEqual([h.state().position, h.state().duration], [200000, 200000]);
+  h.advance(600000);
+  assert.deepEqual([h.state().status, h.state().position], ['paused', 200000], 'frozen');
+});
+
+test('hold: ends with the next track, when hidden, on sign out, reauth, disable, uninstall and after 30 minutes', () => {
+  // The next 200 with an item replaces it, from any device.
+  let h = vanished();
+  h.reply = { body: playing({}, { name: 'Next track' }) }; h.advance(30000);
+  let s = h.state();
+  assert.deepEqual([s.status, s.title, s.deviceName, 'held' in s, s.actions], ['playing', 'Next track', 'Kitchen speaker', false, { previous: true, toggle: true, next: true }]);
+  h.reply = { status: 204 }; h.advance(5000);
+  assert.equal(h.state().status, 'idle', 'a speaker that vanishes is not held');
+  // Hidden: back to idle at once, and no new hold from the old state after the return.
+  h = vanished();
+  h.hide(); h.flush();
+  assert.deepEqual([h.state().status, 'held' in h.state(), h.spotifyEvents().slice(-1)[0].status], ['idle', false, 'idle']);
+  h.show(); h.spotify.observe(true); h.advance(5000);
+  assert.equal(h.state().status, 'idle');
+  // Sign out.
+  h = vanished();
+  h.spotify.signOut(); h.flush();
+  assert.deepEqual([h.state().status, 'held' in h.state(), h.state().webApi], ['idle', false, 'unlinked']);
+  // Reauth: two 401s in a row.
+  h = vanished();
+  h.reply = { status: 401 }; h.advance(30000);
+  assert.deepEqual([h.state().status, 'held' in h.state(), h.state().webApi], ['idle', false, 'reauth']);
+  // Disabling or uninstalling the package.
+  for (const action of ['toggle', 'remove']) {
+    h = vanished();
+    h.addons({ action, id: 'spotify' }); h.flush();
+    assert.deepEqual([h.state().status, 'held' in h.state()], ['idle', false], action);
+  }
+  // 30 minutes of continuous nothing-playing, counted from the vanish.
+  h = vanished();
+  h.advance(1800000 - 1);
+  assert.equal(h.state().held, true, 'still held just before 30 minutes');
+  h.advance(1);
+  assert.deepEqual([h.state().status, 'held' in h.state()], ['idle', false]);
+  assert.deepEqual(gaps(gets(h)).slice(-2), [60000, 60000], 'the idle cadence throughout');
+});
+
+test('hold: no control sends a Web API request; Premium-blocked controls still leave Open Spotify', () => {
+  let h = vanished();
+  const count = h.xhrs.length;
+  for (const command of ['toggle', 'previous', 'next']) {
+    let result = 'pending';
+    h.spotify.control(command, e => { result = e; });
+    assert.equal(h.xhrs.length, count, command + ' sends nothing');
+    assert.equal(result.message, 'Continue in Spotify', command);
+  }
+  h.advance(1000);
+  assert.equal(h.xhrs.length, count, 'and schedules no control poll');
+  assert.deepEqual(h.state().actions, HELD);
+  // After PREMIUM_REQUIRED the held card still offers its one action, which main.js turns into a launch.
+  h = scripted({ body: playing({ device: TV }) });
+  h.reply = { status: 403, body: { error: { status: 403, message: 'Player command failed: Premium required', reason: 'PREMIUM_REQUIRED' } } };
+  h.spotify.control('toggle'); h.flush();
+  assert.deepEqual(h.state().actions, { previous: false, toggle: false, next: false });
+  h.reply = { body: playing({ device: TV }) }; h.advance(750);
+  h.reply = { status: 204 }; h.advance(5000);
+  assert.deepEqual([h.state().held, h.state().actions], [true, HELD]);
 });
 
 test('events are sent only on change, asynchronously, with no secret in any event, state, link or log', () => {
