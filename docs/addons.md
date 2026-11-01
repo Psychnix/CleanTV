@@ -151,7 +151,7 @@ Keep widget and view CSS free of `gap`, the `inset` shorthand, `:focus-visible` 
 ### Tokens
 
 - Only the refresh token is stored, through `CleanTVStore` under `cleantv.spotify.v1` as `{refreshToken}`. A rotated refresh token is saved before the new access token is used; when Spotify sends none, the stored one stays.
-- The access token stays in memory and is refreshed before a request when less than 60 seconds remain. A 401 forces one refresh and a retry; a second 401 shows "Sign in to Spotify again." A `400 invalid_grant` (Spotify's refresh tokens expire six months after the original sign-in) removes the stored token.
+- The access token stays in memory and is refreshed before a request when less than 60 seconds remain. A 401 forces one refresh and a retry; a second 401 shows "Sign in to Spotify again." A `400 invalid_grant` (Spotify's refresh tokens expire six months after the original sign-in) removes the stored token. Any other refresh 400 or 401 keeps the token; as on Android, `webLinked` then still reports the stored sign-in, so Sign out stays available while the controls are off.
 - Sign out removes both slots and stops all Spotify traffic. Removing the package keeps the sign-in, as on Android; sign out first to clear it.
 - Verifier, poll secret, code and tokens never reach `state()`, events, `ShoreQA.state()`, logs or other storage keys.
 
@@ -161,7 +161,7 @@ Keep widget and view CSS free of `gap`, the `inset` shorthand, `:focus-visible` 
 
 | Situation | Next poll |
 | --- | --- |
-| Playing | 5 s, or 750 ms after the track's end if sooner |
+| Playing | 5 s, or once per track 750 ms after its end if sooner (a track still at its end afterwards, for example on a stalled device, stays at 5 s) |
 | Paused | 15 s |
 | 204 or no item (nothing playing) | 30 s, then 60 s after five minutes |
 | After a control | 750 ms |
@@ -169,7 +169,7 @@ Keep widget and view CSS free of `gap`, the `inset` shorthand, `:focus-visible` 
 | 5xx or network error | 10 s doubling to 60 s |
 | 403 | 60 s ("Spotify denied access. Check Premium and the Developer app's users.") |
 
-Returning to Home polls at once unless a backoff is running, and at most once per second. Controls send `PUT /me/player/play` or `/pause` and `POST /me/player/next` or `/previous` with `?device_id=` of the active device and no body. A 403 with reason `PREMIUM_REQUIRED` shows "Spotify Premium is required for playback controls." and disables the buttons for the session; 404 shows that no device is active; restricted devices and `actions.disallows` disable the matching buttons without a request. `cleanframe:spotify` is sent only when the state changes; a pure progress update only when it drifts by two seconds, because the card extrapolates the bar itself. The cover nearest 300 px from `i.scdn.co` or `image-cdn-ak`/`image-cdn-fa.spotifycdn.com` is rewritten to `https://i.scdn.co/image/<id>`, preloaded with `new Image()` and shown only after it loaded; there is no pixel analysis, so the cover colour stays the host fallback.
+Returning to Home polls at once unless a backoff is running, and at most once per second. Controls send `PUT /me/player/play` or `/pause` and `POST /me/player/next` or `/previous` with `?device_id=` of the active device and no body. A 403 with reason `PREMIUM_REQUIRED` shows "Spotify Premium is required for playback controls." and disables the buttons for the session; a 403 with another player reason (for example "Restriction violated") shows that Spotify could not apply the request, a 403 without a reason the access message; 404 shows that no device is active. A control error stays at least 5 s and is then cleared by the next successful poll; the Premium, save and cover messages stay. Restricted devices and `actions.disallows` disable the matching buttons without a request. `cleanframe:spotify` is sent only when the state changes; a pure progress update only when it drifts by two seconds, because the card extrapolates the bar itself. The cover nearest 300 px from `i.scdn.co` or `image-cdn-ak`/`image-cdn-fa.spotifycdn.com` is rewritten to `https://i.scdn.co/image/<id>`, preloaded with `new Image()` and shown only after it loaded; there is no pixel analysis, so the cover colour stays the host fallback.
 
 ### Network and diagnosis
 

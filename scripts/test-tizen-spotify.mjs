@@ -300,6 +300,36 @@ test('relay outcomes: cancel on the phone, expiry, 404, Back and leaving the app
   h.advance(60000); assert.equal(h.xhrs.length, 1, 'leaving the app ends the session');
 });
 
+test('a redirected answer counts as a failed request to the fixed host', () => {
+  let h = linked();
+  h.spotify.link('begin');
+  h.last().respond({ body: { id: ID, expiresIn: 600 }, url: 'https://evil.example/pair' });
+  assert.deepEqual(h.link(), { phase: 'unreachable', message: MESSAGES.relay });
+  h = linked();
+  h.spotify.observe(true); h.flush();
+  h.last().respond({ body: TOKENS(1, { refresh_token: 'refresh-evil' }), url: 'https://evil.example/token' }); h.flush();
+  assert.equal(h.state().errorMessage, MESSAGES.accounts);
+  assert.deepEqual(stored(h.local), { refreshToken: 'refresh-0' }, 'a redirected token answer is ignored');
+});
+
+test('a pending relay poll sends no link event; a changed message does', () => {
+  const h = linked();
+  h.spotify.link('begin'); h.last().respond({ body: { id: ID, expiresIn: 600 } }); h.flush();
+  const linkEvents = () => h.events.filter(e => e.type === 'cleanframe:spotify-link').length;
+  const start = linkEvents();
+  for (let i = 0; i < 30; i++) { h.advance(2000); h.last().respond({ body: { pending: true } }); h.flush(); }
+  assert.equal(linkEvents(), start, 'nothing changed, nothing sent');
+  assert.equal(h.link().phase, 'pending');
+  h.advance(2000); h.last().fail(); h.flush();
+  assert.equal(linkEvents(), start + 1);
+  assert.equal(h.link().message, MESSAGES.relay);
+  h.advance(2000); h.last().fail(); h.flush();
+  assert.equal(linkEvents(), start + 1, 'the same message again sends nothing');
+  h.advance(2000); h.last().respond({ body: { pending: true } }); h.flush();
+  assert.equal(linkEvents(), start + 2, 'recovery is sent');
+  assert.equal(h.link().message, undefined);
+});
+
 test('every network failure names its host; timeouts too', () => {
   let h = linked();
   h.spotify.link('begin'); h.last().fail();
@@ -363,10 +393,56 @@ test('token exchange, refresh with rotation saved before use, and 401 handling',
   refresh.respond({ body: TOKENS(3, { refresh_token: undefined }) });
   assert.equal(h.last().url, POLL); assert.equal(h.last().headers.Authorization, 'Bearer access-3');
   h.last().respond({ status: 401, body: '' }); h.flush();
-  const s = h.state();
-  assert.deepEqual([s.webApi, s.webLinked, s.errorMessage, s.status], ['reauth', false, 'Sign in to Spotify again.', 'idle']);
+  let s = h.state();
+  // As on Android, webLinked says a sign-in is stored, so main.js keeps Sign out usable.
+  assert.deepEqual([s.webApi, s.webLinked, s.errorMessage, s.status], ['reauth', true, 'Sign in to Spotify again.', 'idle']);
+  assert.deepEqual(s.actions, { previous: false, toggle: false, next: false }, 'no controls in reauth');
+  assert.deepEqual(stored(h.local), { refreshToken: 'refresh-rotated' });
   const count = h.xhrs.length;
   h.advance(600000); assert.equal(h.xhrs.length, count, 'no polling after reauth');
+  let done = 'pending';
+  h.spotify.signOut(e => { done = e; }); h.flush();
+  assert.equal(done, null);
+  assert.equal(stored(h.local), null, 'Sign out in reauth clears the stored token');
+  s = h.state();
+  assert.deepEqual([s.webApi, s.webLinked, s.errorMessage], ['unlinked', false, '']);
+});
+
+test('reauth with the token still stored (refresh 400 or 401) keeps Sign out usable; Sign out clears it', () => {
+  for (const answer of [{ status: 400, body: { error: 'invalid_client' } }, { status: 401, body: { error: 'invalid_client' } }]) {
+    const h = linked();
+    h.spotify.observe(true); h.flush();
+    h.last().respond(answer); h.flush();
+    let s = h.state();
+    assert.deepEqual([s.webApi, s.webLinked, s.errorMessage], ['reauth', true, 'Sign in to Spotify again.'], String(answer.status));
+    assert.deepEqual(stored(h.local), { refreshToken: 'refresh-0' });
+    assert.deepEqual(s.actions, { previous: false, toggle: false, next: false });
+    let result = 'pending';
+    h.spotify.control('toggle', e => { result = e; });
+    assert.equal(result.message, 'Sign in with QR to enable controls.');
+    assert.equal(h.xhrs.length, 1, 'no request in reauth');
+    h.spotify.signOut(e => { result = e; }); h.flush();
+    assert.equal(result, null);
+    assert.equal(stored(h.local), null);
+    s = h.state();
+    assert.deepEqual([s.webApi, s.webLinked, s.errorMessage], ['unlinked', false, '']);
+    h.spotify.observe(true); h.advance(600000);
+    assert.equal(h.xhrs.length, 1, 'nothing after sign-out');
+  }
+});
+
+test('Sign out while a rotating refresh is in flight stores nothing and polls nothing', () => {
+  const h = linked();
+  h.spotify.observe(true); h.flush();
+  const refresh = h.last();
+  assert.equal(refresh.url, TOKEN);
+  h.spotify.signOut(); h.flush();
+  refresh.respond({ body: TOKENS(1, { refresh_token: 'refresh-rotated' }) }); h.flush();
+  assert.equal(stored(h.local), null, 'the late rotated token is not written back');
+  assert.equal(h.state().webLinked, false);
+  const n = h.xhrs.length;
+  h.advance(600000);
+  assert.equal(h.xhrs.length, n);
 });
 
 test('invalid_grant forgets the sign-in; a new QR sign-in links again', () => {
@@ -411,9 +487,23 @@ test('polling cadence: 5 s playing, track end + 750 ms, 15 s paused, 30 s idle t
   let h = serving(() => ({ body: playing() }));
   h.spotify.observe(true); h.advance(30000);
   assert.deepEqual(gaps(gets(h)).slice(0, 5), [5000, 5000, 5000, 5000, 5000]);
-  h = serving(() => ({ body: playing({ progress_ms: 197000 }) }));
-  h.spotify.observe(true); h.advance(10000);
-  assert.equal(gaps(gets(h))[0], 3750, 'the poll lands 750 ms after the track ends');
+  // One poll 750 ms after the track ends; a track still at its end (a stalled device) falls back to 5 s.
+  for (const [progress, first] of [[197000, 3750], [199900, 850], [200000, 750], [203000, 750]]) {
+    h = serving(() => ({ body: playing({ progress_ms: progress }) }));
+    h.spotify.observe(true); h.advance(30000);
+    assert.deepEqual(gaps(gets(h)).slice(0, 4), [first, 5000, 5000, 5000], 'progress ' + progress);
+    assert.ok(gets(h).length <= 8, 'no fast polling while stuck at ' + progress);
+  }
+  // Repeat one: the same track starting again gets its end poll again.
+  let answers = [197000, 1000, 197000, 197000];
+  h = serving(() => ({ body: playing({ progress_ms: answers.length > 1 ? answers.shift() : answers[0] }, { uri: 'spotify:track:one' }) }));
+  h.spotify.observe(true); h.advance(20000);
+  assert.deepEqual(gaps(gets(h)).slice(0, 4), [3750, 5000, 3750, 5000]);
+  // The next track, even with the same title, is a new track (the uri decides).
+  answers = [[197000, 'spotify:track:a'], [199000, 'spotify:track:b'], [199000, 'spotify:track:b']];
+  h = serving(() => { const [progress_ms, uri] = answers.length > 1 ? answers.shift() : answers[0]; return { body: playing({ progress_ms }, { uri }) }; });
+  h.spotify.observe(true); h.advance(15000);
+  assert.deepEqual(gaps(gets(h)).slice(0, 3), [3750, 1750, 5000]);
   h = serving(() => ({ body: playing({ is_playing: false }) }));
   h.spotify.observe(true); h.advance(60000);
   assert.deepEqual(gaps(gets(h)), [15000, 15000, 15000, 15000]);
@@ -500,11 +590,91 @@ test('controls use device_id; 204, 403 PREMIUM_REQUIRED, 404 and 429 Retry-After
   assert.equal(result.message, 'Spotify Premium is required for playback controls.');
   h.advance(750); h.last().respond({ body: playing({}, { name: 'Another track' }) }); h.flush();
   assert.equal(h.state().errorMessage, 'Spotify Premium is required for playback controls.', 'the Premium notice stays');
-  // A restricted device and disallowed actions disable buttons without a request.
-  h.advance(5000); h.last().respond({ body: playing({ device: { id: 'dev-2', is_restricted: true, name: 'TV' } }) }); h.flush();
+  h.advance(5000); h.last().respond({ body: playing({}, { name: 'Another track' }) }); h.flush();
+  h.advance(5000); h.last().respond({ body: playing({}, { name: 'Another track' }) }); h.flush();
+  assert.equal(h.state().errorMessage, 'Spotify Premium is required for playback controls.', 'healthy polls keep the Premium notice');
+});
+
+test('a restricted device disables the controls without a request', () => {
+  const h = linked();
+  h.spotify.observe(true); h.flush();
+  h.last().respond({ body: TOKENS(1, { refresh_token: undefined }) });
+  h.last().respond({ body: playing({ device: { id: 'dev-2', is_restricted: true, name: 'TV' } }) }); h.flush();
+  assert.deepEqual(h.state().actions, { previous: false, toggle: false, next: false });
   const before = h.xhrs.length;
+  let result = 'pending';
   h.spotify.control('toggle', e => { result = e; });
   assert.equal(h.xhrs.length, before);
+  assert.equal(result.message, 'No active Spotify device supports this control.');
+});
+
+test('control notices stay at least 5 s, then a healthy poll clears them; cover and Premium notices stay', () => {
+  const GONE = 'Spotify no longer has an active device.', APPLY = 'Spotify could not apply the request. Try again later.';
+  const BUSY = 'Spotify is busy. Try again later.', DENIED = "Spotify denied access. Check Premium and the Developer app's users.";
+  const PREMIUM = 'Spotify Premium is required for playback controls.';
+  const h = linked();
+  h.spotify.observe(true); h.flush();
+  h.last().respond({ body: TOKENS(1, { refresh_token: undefined }) });
+  h.last().respond({ body: playing() }); h.flush();
+  // 404 NO_ACTIVE_DEVICE while a Connect speaker was briefly idle; the same track keeps playing.
+  let result = 'pending';
+  h.spotify.control('next', e => { result = e; });
+  h.last().respond({ status: 404, body: { error: { status: 404, message: 'Player command failed: No active device found', reason: 'NO_ACTIVE_DEVICE' } } }); h.flush();
+  assert.equal(result.message, GONE);
+  assert.equal(h.state().errorMessage, GONE);
+  h.advance(750); assert.equal(h.last().url, POLL); h.last().respond({ body: playing() }); h.flush();
+  assert.equal(h.state().errorMessage, GONE, 'still readable after the 750 ms poll');
+  h.advance(5000); assert.equal(h.last().url, POLL); h.last().respond({ body: playing() }); h.flush();
+  assert.equal(h.state().errorMessage, '', 'a healthy poll of the same track clears it');
+  assert.equal(h.spotifyEvents().slice(-1)[0].errorMessage, '', 'and main.js is told');
+  assert.equal(h.state().deviceName, 'Kitchen speaker');
+  // A player 403 with a reason (Restriction violated, the phone paused first) is not a Premium or user-list problem.
+  h.spotify.control('toggle', e => { result = e; });
+  assert.equal(h.last().url, PLAYER + '/pause?device_id=dev-1');
+  h.last().respond({ status: 403, body: { error: { status: 403, message: 'Player command failed: Restriction violated', reason: 'UNKNOWN' } } }); h.flush();
+  assert.equal(result.message, APPLY);
+  assert.equal(h.state().errorMessage, APPLY);
+  assert.deepEqual(h.state().actions, { previous: true, toggle: true, next: true }, 'not blocked like PREMIUM_REQUIRED');
+  h.advance(750); h.last().respond({ body: playing({ is_playing: false }) }); h.flush();
+  assert.equal(h.state().errorMessage, APPLY);
+  h.advance(15000); h.last().respond({ body: playing({ is_playing: false }) }); h.flush();
+  assert.equal(h.state().errorMessage, '');
+  // A 403 without a player reason keeps the access message.
+  h.spotify.control('toggle', e => { result = e; });
+  h.last().respond({ status: 403, body: { error: { status: 403, message: 'Forbidden' } } }); h.flush();
+  assert.equal(result.message, DENIED);
+  h.advance(750); h.last().respond({ body: playing({ is_playing: false }) }); h.flush();
+  h.advance(15000); h.last().respond({ body: playing({ is_playing: false }) }); h.flush();
+  assert.equal(h.state().errorMessage, '');
+  // 429 on a control: the next poll waits for Retry-After, and its success clears the notice.
+  h.spotify.control('toggle', e => { result = e; });
+  h.last().respond({ status: 429, headers: { 'Retry-After': '9' } }); h.flush();
+  assert.equal(h.state().errorMessage, BUSY);
+  h.advance(9000); assert.equal(h.last().url, POLL); h.last().respond({ body: playing({ is_playing: false }) }); h.flush();
+  assert.equal(h.state().errorMessage, '');
+  // The i.scdn.co diagnostic is not a control notice: art.failed stops a retry, so it must stay.
+  assert.equal(h.images.length, 1); h.images[0].error(); h.flush();
+  assert.equal(h.state().errorMessage, MESSAGES.images);
+  h.advance(15000); h.last().respond({ body: playing({ is_playing: false }) }); h.flush();
+  h.advance(15000); h.last().respond({ body: playing({ is_playing: false }) }); h.flush();
+  assert.equal(h.state().errorMessage, MESSAGES.images, 'healthy polls keep the cover message');
+  // PREMIUM_REQUIRED stays through healthy polls of the same track.
+  h.spotify.control('toggle', e => { result = e; });
+  h.last().respond({ status: 403, body: { error: { status: 403, message: 'Player command failed: Premium required', reason: 'PREMIUM_REQUIRED' } } }); h.flush();
+  h.advance(750); h.last().respond({ body: playing({ is_playing: false }) }); h.flush();
+  h.advance(15000); h.last().respond({ body: playing({ is_playing: false }) }); h.flush();
+  assert.equal(h.state().errorMessage, PREMIUM);
+});
+
+test('a player 403 holds polling for 60 s, also across a return to Home', () => {
+  const h = serving(() => ({ status: 403, body: { error: { status: 403, message: 'Forbidden' } } }));
+  h.spotify.observe(true); h.advance(200000);
+  assert.deepEqual(gaps(gets(h)).slice(0, 3), [60000, 60000, 60000]);
+  assert.deepEqual([h.state().webApi, h.state().errorMessage], ['unavailable', "Spotify denied access. Check Premium and the Developer app's users."]);
+  h.spotify.observe(false);
+  const n = h.xhrs.length;
+  h.spotify.observe(true); h.flush();
+  assert.equal(h.xhrs.length, n, 'returning to Home does not skip the hold');
 });
 
 test('mapping: titles, artists, episodes, disallows and the 300 px cover from i.scdn.co after it loaded', () => {

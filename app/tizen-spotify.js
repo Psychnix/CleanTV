@@ -110,10 +110,12 @@
   /* ---------- Public state, published only when it changes ---------- */
   function idle() { return { status: 'idle', title: '', artist: '', duration: 0, position: 0, speed: 1, art: '', artColor: '', artLight: false, actions: { previous: false, toggle: false, next: false }, deviceName: '' }; }
   var player = idle(), webApi = refreshToken ? 'linked' : 'unlinked', problem = '', notice = '';
-  var deviceId = '', blocked = false, sent = null, sentAt = 0, queued = false;
+  // said: the notice the last failed control set, shown until saidUntil and then cleared by a healthy poll.
+  var deviceId = '', blocked = false, sent = null, sentAt = 0, queued = false, said = '', saidUntil = 0;
   function snapshot() {
     var s = copy(player), linked = !!refreshToken && webApi !== 'reauth';
-    s.connection = 'connected'; s.permission = true; s.webLinked = linked;
+    // As on Android, webLinked means a sign-in is stored, so Sign out stays usable in reauth.
+    s.connection = 'connected'; s.permission = true; s.webLinked = !!refreshToken;
     s.webApi = refreshToken || webApi === 'reauth' || webApi === 'signout_failed' ? webApi : 'unlinked';
     s.errorMessage = problem || notice || '';
     if (!linked || blocked) s.actions = { previous: false, toggle: false, next: false };
@@ -196,7 +198,7 @@
   }
 
   /* ---------- Playback polling (only while main.js observes) ---------- */
-  var observing = false, timer = 0, polling = null, failures = 0, limits = 0, idleSince = 0, holdUntil = 0, lastPoll = 0;
+  var observing = false, timer = 0, polling = null, failures = 0, limits = 0, idleSince = 0, holdUntil = 0, lastPoll = 0, endKey = '';
   var art = { want: '', ready: '', loading: '', failed: '' };
   function halt() { window.clearTimeout(timer); timer = 0; if (polling) { polling.abort(); polling = null; } }
   function schedule(delay) {
@@ -210,7 +212,12 @@
     limits++; holdUntil = now() + d;
     return d;
   }
-  function healthy() { failures = 0; limits = 0; holdUntil = 0; problem = ''; webApi = 'connected'; }
+  function healthy() {
+    failures = 0; limits = 0; holdUntil = 0; problem = ''; webApi = 'connected';
+    // A control error stays at least 5 s, then a successful poll replaces it. Premium, save and cover notices are never in said.
+    if (notice !== said) said = '';
+    else if (said && now() >= saidUntil) notice = said = '';
+  }
   function fail(f) {
     if (f.kind === 'reauth') { webApi = 'reauth'; problem = M.again; player = idle(); deviceId = ''; halt(); }
     else if (f.kind === 'off') { player = idle(); halt(); }
@@ -249,7 +256,7 @@
   function show(body, item) {
     var d = body.device && typeof body.device === 'object' ? body.device : {}, dis = body.actions && body.actions.disallows || {};
     var playing = body.is_playing === true, episode = item.type === 'episode', progress = number(body.progress_ms), duration = number(item.duration_ms);
-    var restricted, title = text(item.name, 300), podcast = item.show && typeof item.show === 'object' ? item.show : {};
+    var restricted, title = text(item.name, 300), podcast = item.show && typeof item.show === 'object' ? item.show : {}, remaining = duration - progress, key;
     deviceId = typeof d.id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(d.id) ? d.id : '';
     restricted = d.is_restricted === true || !deviceId;
     if (title !== player.title) notice = notice === M.premium ? notice : '';
@@ -261,8 +268,14 @@
       actions: { previous: !restricted && !dis.skipping_prev, toggle: !restricted && !(playing ? dis.pausing : dis.resuming), next: !restricted && !dis.skipping_next },
       deviceName: text(d.name, 120)
     };
-    // While playing, also poll at the end of the track to catch the next one.
-    return playing ? duration ? Math.min(PLAYING, Math.max(TRACK_END, duration - progress + TRACK_END)) : PLAYING : PAUSED;
+    // While playing, poll once at the end of each track to catch the next one. A track still at its end
+    // after that poll (a stalled device keeps a stale playing state) falls back to 5 s.
+    if (!playing) { endKey = ''; return PAUSED; }
+    if (!duration || remaining + TRACK_END >= PLAYING) { endKey = ''; return PLAYING; }
+    key = typeof item.uri === 'string' && item.uri ? item.uri : title;
+    if (key === endKey) return PLAYING;
+    endKey = key;
+    return Math.max(TRACK_END, remaining + TRACK_END);
   }
   /* The image nearest to 300 px, rewritten to i.scdn.co (the one image origin config.xml allows) and
      shown only after it loaded. No pixel analysis: the cover colour stays the host fallback. */
@@ -323,11 +336,13 @@
       data = parse(body);
       if (status <= 0) message = offline(status, HOST.api);
       else if (status === 403 && data && data.error && data.error.reason === 'PREMIUM_REQUIRED') { blocked = true; message = M.premium; }
-      else if (status === 403) message = M.denied;
+      // A player reason (for example UNKNOWN for "Restriction violated") is not an access problem.
+      else if (status === 403) message = data && data.error && typeof data.error.reason === 'string' && data.error.reason ? M.apply : M.denied;
       else if (status === 404) message = M.gone;
       else if (status === 429) message = M.busy;
       else message = M.apply;
-      notice = message; publish(); finish({ message: message });
+      notice = message; said = message === M.premium ? '' : message; saidUntil = now() + PLAYING;
+      publish(); finish({ message: message });
       schedule(status === 429 ? limited(seconds(xhr)) : AFTER_CONTROL);
     });
   }
@@ -380,7 +395,7 @@
   /* Every 2 s while the QR screen is open, one request at a time, until expiry. */
   function wait(s) {
     var again = function (message) {
-      if (link.message !== message) { link = copy(link); if (message) link.message = message; else delete link.message; setLink(link); }
+      if ((link.message || '') !== message) { link = copy(link); if (message) link.message = message; else delete link.message; setLink(link); }
       s.timer = window.setTimeout(function () { wait(s); }, PAIR_POLL);
     };
     if (session !== s) return;
