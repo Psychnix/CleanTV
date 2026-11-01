@@ -222,6 +222,9 @@ state('Settings add-ons discover, light, German', look({ bg: 'light', language: 
 state('Settings layout detail, dark list', look({ bg: 'dark', layout: 'list' }), [['scene', 'settings'], ['act', 'settings.group.layout'], ['nav', 'down']]);
 state('Settings focus detail, light type', look({ bg: 'light', focus: 'type' }), [['scene', 'settings'], ['act', 'settings.group.focus']]);
 state('Wallpaper picker', look({ wall: 'summit' }), [['scene', 'settings'], ['act', 'settings.group.background'], ['act', 'background.wallpaper']]);
+// Favourites stars, filled and outlined, with the remote focus on a star.
+state('Wallpaper picker, favourites star', look({ wall: 'summit', favourites: ['summit', 'golden'] }), [['scene', 'settings'], ['act', 'settings.group.background'], ['act', 'background.wallpaper'], ['nav', 'right']]);
+state('Wallpaper picker, favourites, German', look({ wall: 'peaks', language: 'de', favourites: ['cove', 'peaks'] }), [['scene', 'settings'], ['act', 'settings.group.background'], ['act', 'background.wallpaper'], ['nav', 'right']]);
 state('All apps, photo glass', look({ wall: 'cove' }), [['scene', 'apps'], ['nav', 'down']]);
 state('All apps, dark type', look({ bg: 'dark', focus: 'type' }), [['scene', 'apps']]);
 state('Home editor, light', look({ bg: 'light' }), [['scene', 'editor'], ['focus', 'editor.move.youtube'], ['nav', 'right']]);

@@ -540,6 +540,18 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000}
 .wallpaper-preview-name{display:flex;align-items:baseline;font-size:32px;line-height:42px;color:var(--ink)}
 .wallpaper-count{font-size:26px;line-height:36px;color:var(--mute);white-space:nowrap}
 .wallpaper-preview-state{margin-top:4px;font-size:26px;line-height:36px}
+/* Favourites star on every wallpaper row: Right from a row focuses it, OK toggles it. */
+.wallpaper-choice{padding-right:84px}
+.wallpaper-choice .setting-name{overflow:hidden;text-overflow:ellipsis}
+.wallpaper-star{position:absolute;right:14px;top:16px;width:52px;height:52px;border-radius:26px;display:flex;align-items:center;justify-content:center;color:var(--mute);transition:background-color 140ms linear,color 140ms linear}
+.wallpaper-star .ico{width:30px;height:30px;stroke-width:1.8}
+.wallpaper-star.is-on{color:var(--ink)}
+.wallpaper-star.is-on .ico{fill:currentColor}
+.wallpaper-choice.is-focus .wallpaper-star{color:var(--solid-mute)}
+.wallpaper-choice.is-focus .wallpaper-star.is-on{color:var(--solid-ink)}
+.wallpaper-choice.is-star-row{background:var(--line)}
+.wallpaper-star.is-focus{background:var(--solid);color:var(--solid-ink)}
+.wallpaper-preview-note{margin-top:4px;font-size:26px;line-height:36px}
 @media(prefers-reduced-motion:reduce){.wallpaper-rows{transition:none}}
 @media(prefers-reduced-motion:reduce){.panel-content,.ph-group,.tile-content,.u-content,.util-focus-label,.quiet-utils .u .ico{transform:none!important}.tile-content{transition:opacity 120ms linear!important}}
 
