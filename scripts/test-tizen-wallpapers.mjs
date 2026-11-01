@@ -306,6 +306,32 @@ test('a file that fails its checksum or size is not stored and the photo keeps s
   }
 });
 
+test('a large photo is hashed in 128 KiB steps, one per task', () => {
+  for (const broken of [false, true]) {
+    const label = broken ? 'last step corrupted' : 'intact';
+    const h = harness(), big = photo('aw-big', { jpg: 600 * 1024 }), jpg = BASE + big.entry.files.jpg.path, thumb = BASE + big.entry.files.thumb.path;
+    h.bind(); h.install([big]);
+    if (broken) { const bytes = Buffer.from(big.bytes.jpg); bytes[bytes.length - 1] ^= 1; h.routes.set(jpg, { body: buffer(bytes) }); }
+    Object.assign(h.model, { wall: 'aw-big', shown: 'aw-big' }); h.walls.sync();
+    h.until(() => h.xhrs.some(x => x.url === jpg && x.status === 200));
+    if (!broken) {
+      // Every task between the answer and the next request hashes at most one step.
+      const tasks = h.until(() => h.requests().includes(thumb));
+      assert.ok(tasks >= Math.ceil(big.bytes.jpg.length / 131072), label + ': ' + tasks + ' tasks');
+    }
+    h.flush();
+    if (broken) {
+      assert.equal(h.walls.message(), 'A wallpaper download did not match its checksum.', label);
+      assert.deepEqual(h.idb.files(), [], label);
+      assert.equal(h.walls.stored('aw-big'), false, label);
+      assert.ok(!h.requests().includes(thumb), label + ': no further file');
+    } else {
+      assert.equal(h.record().stored['aw-big'], big.entry.rev, label);
+      assert.equal(h.walls.stored('aw-big'), true, label);
+    }
+  }
+});
+
 test('rotation keeps at most ten add-on favourites; turning it off deletes them but keeps the stars', () => {
   const h = harness(), photos = Array.from({ length: 12 }, (_, i) => photo('aw-p' + i));
   const ids = photos.map(p => p.entry.id);

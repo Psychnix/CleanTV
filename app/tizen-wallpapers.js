@@ -9,6 +9,7 @@
   var BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', INDEX_URL = BASE + INDEX;
   var PREFIX = 'cleantv.wallpapers.v1', DB_NAME = 'cleantv-wallpapers';
   var INDEX_LIMIT = 262144, MAX_ENTRIES = 200, KEEP = 10, DAY = 86400000, PICKER_GAP = 60000, TIMEOUT = 15000, FILE_TIMEOUT = 60000;
+  var HASH_STEP = 131072; // bytes hashed per task, a multiple of 64
   var ROLES = ['jpg', 'thumb', 'panel', 'study-soft', 'field-blur', 'field-frost', 'field-clear'];
   var NAMES = { jpg: 'image.jpg', thumb: 'thumb.jpg', panel: 'panel.jpg', 'study-soft': 'study-soft.jpg', 'field-blur': 'field-blur.jpg', 'field-frost': 'field-frost.jpg', 'field-clear': 'field-clear.jpg' };
   var LIMITS = { jpg: 4194304, thumb: 262144, panel: 65536, 'study-soft': 2097152, 'field-blur': 2097152, 'field-frost': 2097152, 'field-clear': 2097152 };
@@ -385,9 +386,10 @@
         get(BASE + file.path, file.size, FILE_TIMEOUT, still, function (error, buffer) {
           if (error) { done(error); return; }
           if (!still()) { done('cancelled'); return; }
-          // Hashing is synchronous; one file per task keeps each pause short.
-          later(function () {
-            if (buffer.byteLength !== file.size || SHA.bytes(new window.Uint8Array(buffer)) !== file.sha256) { done('checksum'); return; }
+          if (buffer.byteLength !== file.size) { done('checksum'); return; }
+          // Hashing is synchronous, so it runs in steps of 128 KiB, one per task: a remote key never waits long.
+          SHA.sliced(new window.Uint8Array(buffer), HASH_STEP, later, function (sum) {
+            if (sum !== file.sha256) { done('checksum'); return; }
             buffers[role] = buffer;
             step();
           });
