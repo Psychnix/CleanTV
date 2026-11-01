@@ -808,18 +808,19 @@ try {
     const cors = { 'access-control-allow-origin': '*' }, PACKAGE = { api: 1, id: 'spotify', name: 'Spotify', version: '1.0.0', kind: 'spotify', description: 'Spotify playback and account controls', author: 'CleanFrame', license: 'MIT', enabled: true };
     const slot = data => { const json = JSON.stringify(data); return JSON.stringify({ v: 1, seq: 1, sum: createHash('sha256').update(json).digest('hex'), data: json }); };
     const seeds = { addons: slot({ installed: { spotify: PACKAGE }, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } }), token: slot({ refreshToken: 'qa-hold-refresh' }) };
-    const log = { controls: [] }, live = { type: 'TV', gone: false };
+    // live.gate, while set, keeps the vanishing poll's 204 back until live.release(); live.waiting tells that it arrived.
+    const log = { controls: [] }, live = { type: 'TV', gone: false, gate: null, release: null, waiting: false };
     const json = (route, body) => route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(body) });
     const serve = async p => {
       p.__allowExternal = [ACCOUNTS, API, IMAGES];
       await p.addInitScript(s => { if (!sessionStorage.getItem('__spotifySeeded')) { localStorage.setItem('cleantv.addons.v1.a', s.addons); localStorage.setItem('cleantv.spotify.v1.a', s.token); sessionStorage.setItem('__spotifySeeded', '1'); } }, seeds);
       await p.route(url => url.origin === ACCOUNTS, route => route.request().method() === 'OPTIONS' ? route.fulfill({ status: 204, headers: cors })
         : json(route, { access_token: 'qa-hold-access', token_type: 'Bearer', expires_in: 3600, scope: 'user-read-playback-state user-modify-playback-state' }));
-      await p.route(url => url.origin === API, route => {
+      await p.route(url => url.origin === API, async route => {
         const r = route.request(), url = new URL(r.url());
         if (r.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { ...cors, 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS', 'access-control-allow-headers': 'authorization, content-type' } });
         if (url.pathname !== '/v1/me/player') { log.controls.push(r.method() + ' ' + url.pathname); return route.fulfill({ status: 204, headers: cors }); }
-        if (live.gone) return route.fulfill({ status: 204, headers: cors });
+        if (live.gone) { if (live.gate) { live.waiting = true; await live.gate; } return route.fulfill({ status: 204, headers: cors }); }
         return json(route, { device: { id: 'qa-tv-1', is_active: true, is_restricted: false, name: 'QA Samsung TV', type: live.type }, progress_ms: 42000, is_playing: true, actions: { disallows: {} },
           item: { type: 'track', name: 'QA held track', duration_ms: 180000, artists: [{ name: 'QA Artist' }], album: { images: [{ url: COVER, width: 300, height: 300 }] } } });
       });
@@ -867,6 +868,41 @@ try {
     check('German settings status: In Spotify fortsetzen', /In Spotify fortsetzen/.test(await current.locator('#appearanceRows').innerText()));
     await call('preferences', { language: 'en' }); await scene('home');
     check('Still held after the settings round trip', (await state()).spotify.held === true && (await card()).play === 'Continue in Spotify');
+    // A hold that arrives while Next or Previous has the focus moves it to Continue in Spotify; OK there opens Spotify.
+    for (const [key, action] of [['ArrowRight', 'next'], ['ArrowLeft', 'previous']]) {
+      live.gone = false;
+      await current.reload(); await ready();
+      await current.waitForFunction(() => !document.getElementById('spotifyPlayer').hidden && ShoreQA.state().spotify.status === 'playing');
+      // The next poll (5 s while playing) finds the device gone and waits at the gate meanwhile.
+      live.gate = new Promise(resolve => { live.release = resolve; }); live.waiting = false; live.gone = true;
+      for (let i = 0; i < 200 && !live.waiting; i++) await current.waitForTimeout(50);
+      check(action + ': the vanishing poll waits at the gate', live.waiting);
+      await current.keyboard.press('ArrowDown');
+      await current.waitForFunction(() => document.getElementById('spotifyPlayer').classList.contains('is-expanded'));
+      await current.keyboard.press(key);
+      check(action + ' takes the focus while the TV plays', (await state()).focusAction === 'spotify.' + action, (await state()).focusAction);
+      const controls = log.controls.length;
+      live.release(); live.gate = null;
+      await current.waitForFunction(() => ShoreQA.state().spotify.held === true);
+      const focus = await current.evaluate(a => {
+        const button = name => document.querySelector('[data-action="spotify.' + name + '"]');
+        return { expanded: document.getElementById('spotifyPlayer').classList.contains('is-expanded'), action: ShoreQA.state().focusAction,
+          toggle: button('toggle').classList.contains('is-focus'), left: button(a).classList.contains('is-focus'), disabled: button(a).getAttribute('aria-disabled') };
+      }, action);
+      check('A hold while ' + action + ' has the focus moves it to Continue in Spotify', focus.expanded && focus.action === 'spotify.toggle' && focus.toggle && !focus.left && focus.disabled === 'true', focus);
+      await current.keyboard.press('Enter');
+      await current.waitForFunction(() => __tv.calls.filter(c => c.id === 'rJeHak5zRg.Spotify').length === 1);
+      check('OK there launches Spotify once, without a Web API request (' + action + ')', await launches() === 1 && log.controls.length === controls, log.controls);
+      // Compact again: Down wakes the card on Continue in Spotify, and OK on the compact card opens Spotify too.
+      await current.waitForFunction(() => !document.getElementById('spotifyPlayer').classList.contains('is-expanded'), null, { timeout: 6000 });
+      await current.keyboard.press('ArrowDown');
+      await current.waitForFunction(() => document.getElementById('spotifyPlayer').classList.contains('is-expanded'));
+      check('Waking the held card after ' + action + ' lands on Continue in Spotify', (await state()).focusAction === 'spotify.toggle', (await state()).focusAction);
+      await current.waitForFunction(() => !document.getElementById('spotifyPlayer').classList.contains('is-expanded'), null, { timeout: 6000 });
+      await current.keyboard.press('Enter');
+      await current.waitForFunction(() => __tv.calls.filter(c => c.id === 'rJeHak5zRg.Spotify').length === 2);
+      check('OK on the compact held card launches Spotify (' + action + ')', await launches() === 2 && log.controls.length === controls, log.controls);
+    }
     // A phone that vanishes is not held: the card disappears as before.
     live.type = 'Smartphone'; live.gone = false;
     await current.reload(); await ready();

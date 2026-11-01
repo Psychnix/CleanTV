@@ -749,6 +749,31 @@ test('hold: a TV device that vanishes soon after CleanTV came to the front stays
     x.reply = reply; x.advance(5000);
     assert.deepEqual([x.state().status, x.state().held], ['paused', true], type + ' ' + JSON.stringify(reply));
   }
+  // A cover still loading when the device vanished reaches the held card once it arrives.
+  const late = vanished();
+  assert.equal(late.state().art, '', 'the cover is still loading');
+  late.images[0].load(); late.flush();
+  assert.equal(late.state().art, 'https://i.scdn.co/image/' + COVER, 'a late cover reaches the held card');
+  assert.equal(late.spotifyEvents().slice(-1)[0].art, 'https://i.scdn.co/image/' + COVER);
+});
+
+test('hold: a 200 without an item from another device is that device, not the vanish', () => {
+  const PHONE = { ...TV, id: 'phone-1', name: 'Phone', type: 'Smartphone' };
+  const ad = device => ({ body: { device, is_playing: true, currently_playing_type: 'ad', progress_ms: 1000, item: null } });
+  // A phone that starts with an ad after the TV state, and a later 204, hold nothing.
+  let h = scripted({ body: playing({ device: TV }) });
+  h.reply = ad(PHONE); h.advance(5000);
+  assert.deepEqual([h.state().status, 'held' in h.state()], ['idle', false]);
+  h.reply = { status: 204 }; h.advance(30000);
+  assert.equal(h.state().status, 'idle');
+  // Another TV (another device id) is not this TV's vanish either.
+  h = scripted({ body: playing({ device: TV }) });
+  h.reply = ad({ ...TV, id: 'tv-2' }); h.advance(5000);
+  assert.equal(h.state().status, 'idle');
+  // A held card ends once a no-item reply names another device.
+  h = vanished();
+  h.reply = ad(PHONE); h.advance(30000);
+  assert.deepEqual([h.state().status, 'held' in h.state()], ['idle', false]);
 });
 
 test('hold: no hold for a phone, a speaker, a computer or a device without a type', () => {
@@ -803,6 +828,10 @@ test('hold: the position freezes at the last one, advanced to the vanish while p
   assert.deepEqual([h.state().position, h.state().duration], [200000, 200000]);
   h.advance(600000);
   assert.deepEqual([h.state().status, h.state().position], ['paused', 200000], 'frozen');
+  // An item without a duration is not capped: it keeps its last position, not 0:00.
+  h = scripted({ body: playing({ device: TV, is_playing: false, progress_ms: 42000 }, { duration_ms: undefined }) });
+  h.reply = { status: 204 }; h.advance(15000);
+  assert.deepEqual([h.state().held, h.state().duration, h.state().position], [true, 0, 42000], 'no duration');
 });
 
 test('hold: ends with the next track, when hidden, on sign out, reauth, disable, uninstall and after 30 minutes', () => {
@@ -840,6 +869,39 @@ test('hold: ends with the next track, when hidden, on sign out, reauth, disable,
   h.advance(1);
   assert.deepEqual([h.state().status, 'held' in h.state()], ['idle', false]);
   assert.deepEqual(gaps(gets(h)).slice(-2), [60000, 60000], 'the idle cadence throughout');
+});
+
+test('hold: a new QR sign-in, perhaps another account, ends the hold and the old TV state', () => {
+  for (const held of [true, false]) {
+    // Held, or the TV track still shown and not yet vanished.
+    const h = held ? vanished() : scripted({ body: playing({ device: TV }) });
+    const auto = h.auto; h.auto = null;
+    signIn(h, TOKENS(7));
+    assert.deepEqual([h.state().status, 'held' in h.state(), h.state().webApi], ['idle', false, 'linked'], 'held ' + held);
+    const poll = gets(h).slice(-1)[0];
+    assert.equal(poll.headers.Authorization, 'Bearer access-7');
+    poll.respond({ status: 204 }); h.flush();
+    h.auto = auto; h.reply = { status: 204 }; h.advance(60000);
+    assert.deepEqual([h.state().status, h.state().title, 'held' in h.state()], ['idle', '', false], 'the new account\'s 204 holds nothing');
+  }
+});
+
+test('hold: each clear also forgets the TV state, so a 204 right after signing in or enabling again holds nothing', () => {
+  const empty = h => [h.state().status, h.state().title, 'held' in h.state()];
+  // Disabled and enabled again within the window: main.js stops and restarts observing.
+  let h = scripted({ body: playing({ device: TV }) });
+  h.addons({ action: 'toggle', id: 'spotify' }); h.flush(); h.spotify.observe(false);
+  h.addons({ action: 'toggle', id: 'spotify' }); h.flush();
+  h.reply = { status: 204 }; h.spotify.observe(true); h.advance(1000);
+  assert.deepEqual(empty(h), ['idle', '', false], 'disabled and enabled again');
+  // Signed out, or asked to sign in again (two 401s), then signed in by QR at once.
+  for (const [label, clear] of [['sign out', x => { x.spotify.signOut(); x.flush(); }], ['reauth', x => { x.reply = { status: 401 }; x.advance(5000); assert.equal(x.state().webApi, 'reauth'); }]]) {
+    h = scripted({ body: playing({ device: TV }) });
+    clear(h); h.auto = null; signIn(h);
+    assert.equal(h.last().url, POLL, label + ': the first poll after the sign-in');
+    h.last().respond({ status: 204 }); h.flush();
+    assert.deepEqual(empty(h), ['idle', '', false], label);
+  }
 });
 
 test('hold: no control sends a Web API request; Premium-blocked controls still leave Open Spotify', () => {

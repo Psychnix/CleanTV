@@ -796,7 +796,11 @@
 
   /* ---------- Home (browse) ---------- */
   V.home = {
-    norm: function (t) { if (t.f.zone === 'spotify' && !spotifyVisible()) t.f.zone = 'apps'; },
+    norm: function (t) {
+      if (t.f.zone === 'spotify' && !spotifyVisible()) t.f.zone = 'apps';
+      // A held card has one action: focus left on Previous or Next returns to the play button.
+      else if (t.f.zone === 'spotify' && spotifyState.held && (t.f.p === 0 || t.f.p === 2)) t.f.p = 1;
+    },
     key: function (t, k) {
       var f = t.f, h = S.c.home, U = utils(), x = axes(), i = ensureSel();
       if (f.zone === 'spotify') { spotifyKey(t, k); return; }
@@ -1569,7 +1573,7 @@
     setHTML(caption, html);
   }
 
-  /* Spotify controls persist in the DOM; track updates never move remote focus. */
+  /* Spotify controls persist in the DOM; track updates never move remote focus, except off a held card's disabled buttons (V.home.norm). */
   function spotifyVisible() { return !!(SPOTIFY && ADDONS.enabled('spotify') && S.c && S.c.spotifyEnabled && S.stack && (top().id === 'home' || top().id === 'appearance' && top().group === 'spotify') && !document.hidden && (spotifyState.status === 'playing' || spotifyState.status === 'paused') && spotifyState.title); }
   function spotifyExpanded() { return spotifyVisible() && top().f.zone === 'spotify' && spotifyAwake; }
   function spotifyActivity() {
@@ -1604,8 +1608,8 @@
         if (spotifyState.actions && spotifyState.actions[spotifyCommands[candidate]]) { f.p = candidate; break; }
         candidate += direction;
       }
-    } else if (key === 'ok' && spotifyState.held && (index === 1 || !spotifyAwake)) {
-      // Samsung only: the TV's own Spotify app was paused by CleanTV and continues the held track.
+    } else if (key === 'ok' && spotifyState.held) {
+      // Samsung only: the TV's own Spotify app was paused by CleanTV; any OK on the held card continues it there.
       perform('Spotify', function (done) { FrameDevice.launchApp(SPOTIFY_APP, done); });
     } else if (key === 'ok' && spotifyState.actions && spotifyState.actions[spotifyCommands[index]]) {
       FrameDevice.spotify.control(spotifyCommands[index], function (error) {

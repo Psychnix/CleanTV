@@ -203,7 +203,7 @@
   /* ---------- Playback polling (only while main.js observes) ---------- */
   var observing = false, timer = 0, polling = null, failures = 0, limits = 0, idleSince = 0, holdUntil = 0, lastPoll = 0, endKey = '';
   var art = { want: '', ready: '', loading: '', failed: '' };
-  // seen: the last 200 with an item {at, tv, playing, position}; shownAt: when CleanTV last became visible.
+  // seen: the last 200 with an item {at, tv, id, playing, position}; shownAt: when CleanTV last became visible.
   var seen = null, shownAt = hidden() ? 0 : now();
   function halt() { window.clearTimeout(timer); timer = 0; if (polling) { polling.abort(); polling = null; } }
   /* Nothing playing; also ends a held card and forgets the last state. */
@@ -216,6 +216,11 @@
      vanishes a few seconds later. If the last state came from this TV during this visit and the vanish
      follows the return within 60 s, the card keeps that track as paused and main.js opens Spotify on OK. */
   function holdable() { return !!seen && seen.tv && seen.at >= shownAt && now() - shownAt <= HOLD_WINDOW; }
+  /* A 200 without an item that names another device (an ad or a gap on a phone) is not this TV's vanish. */
+  function elsewhere(body) {
+    var d = body && body.device && typeof body.device === 'object' ? body.device : null;
+    return !!d && (!onThisTv(d) || !!seen && !!seen.id && typeof d.id === 'string' && d.id !== seen.id);
+  }
   function hold() {
     // player still holds the last mapped track; a playing one is advanced to the vanish.
     var position = seen.position + (seen.playing ? now() - seen.at : 0);
@@ -268,7 +273,8 @@
       // Nothing playing: 30 s, then 60 s after five minutes. A held card stays for 30 minutes of this.
       healthy(); deviceId = '';
       if (!idleSince) idleSince = now();
-      if (!player.held && holdable()) hold();
+      if (elsewhere(body)) clearPlayer();
+      else if (!player.held && holdable()) hold();
       else if (!player.held || now() - idleSince >= HOLD_MAX) clearPlayer();
       schedule(now() - idleSince >= IDLE_AFTER ? IDLE_LONG : IDLE);
     } else if (status === 200 && body) { healthy(); idleSince = 0; schedule(show(body, item)); }
@@ -291,7 +297,7 @@
       actions: { previous: !restricted && !dis.skipping_prev, toggle: !restricted && !(playing ? dis.pausing : dis.resuming), next: !restricted && !dis.skipping_next },
       deviceName: text(d.name, 120)
     };
-    seen = { at: now(), tv: onThisTv(d), playing: playing, position: player.position };
+    seen = { at: now(), tv: onThisTv(d), id: deviceId, playing: playing, position: player.position };
     // While playing, poll once at the end of each track to catch the next one. A track still at its end
     // after that poll (a stalled device keeps a stale playing state) falls back to 5 s.
     if (!playing) { endKey = ''; return PAUSED; }
@@ -459,6 +465,8 @@
       if (!keep(data.refresh_token)) { end(s, { phase: 'failed', message: M.save }); return; }
       refreshToken = data.refresh_token; access = { token: data.access_token, expiresAt: now() + data.expires_in * 1000 };
       webApi = 'linked'; problem = ''; notice = ''; blocked = false; failures = 0; limits = 0; holdUntil = 0;
+      // A new sign-in may be another account: its playback starts from nothing, without the old hold.
+      clearPlayer(); idleSince = 0;
       end(s, { phase: 'connected' });
       publish();
       schedule(0);
