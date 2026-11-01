@@ -4,9 +4,12 @@
   'use strict';
   /* ---------- Kind registry (also outside Tizen, so modules can always register) ---------- */
   // Modules loaded before this file may leave {queue: [[kind, definition], ...]}; it is replayed in order.
-  var kinds = {}, early = window.CleanTVAddonKinds, BUILT_IN = { text: 1, clock: 1, native: 1 };
+  // Later registrations are refused: stored packages are read once at load, so a late kind would find
+  // its package already set aside and could let an older or different package replace it.
+  var kinds = {}, early = window.CleanTVAddonKinds, BUILT_IN = { text: 1, clock: 1, native: 1 }, loaded = false;
   window.CleanTVAddonKinds = {
     register: function (kind, definition) {
+      if (loaded) throw new Error('Add-on kinds must be registered before tizen-addons.js loads: ' + kind);
       if (typeof kind !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(kind) || BUILT_IN[kind] || Object.prototype.hasOwnProperty.call(kinds, kind)) throw new Error('Add-on kind cannot be registered: ' + kind);
       if (!definition || typeof definition.validate !== 'function' || definition.widget !== false) throw new Error('Add-on kind needs validate() and widget: false: ' + kind);
       kinds[kind] = { validate: definition.validate };
@@ -17,6 +20,7 @@
   if (early && Array.isArray(early.queue)) early.queue.forEach(function (args) {
     try { window.CleanTVAddonKinds.register(args[0], args[1]); } catch (e) { window.setTimeout(function () { throw e; }, 0); }
   });
+  loaded = true;
 
   var listeners = [], installed = {};
   function copy(value) { return JSON.parse(JSON.stringify(value)); }
@@ -36,7 +40,8 @@
   // config.xml allows this origin; fixed paths keep requests on the reviewed repository.
   var BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', CATALOG = BASE + 'cleantv-catalog.json';
   var PREFIX = 'cleantv.addons.v1', LIMIT = 131072, PACKAGE_LIMIT = 65536, TIMEOUT = 15000, MAX_ENTRIES = 32, MAX_WIDGETS = 3;
-  var ID = /^[a-z][a-z0-9-]{0,47}$/, VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/, CHECKSUM = /^[a-f0-9]{64}$/;
+  // "constructor" is the one Object.prototype key this pattern could match; it is never an add-on ID.
+  var ID = /^(?!constructor$)[a-z][a-z0-9-]{0,47}$/, VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/, CHECKSUM = /^[a-f0-9]{64}$/;
   var PATH = /^packages\/[a-z0-9-]+\/[0-9]+\.[0-9]+\.[0-9]+\.json$/;
   var IDENTITY = ['api', 'id', 'name', 'version', 'kind', 'description', 'author', 'license', 'permissions'];
   var catalog = [], busy = false, error = '', info = { checked: false, total: 0, compatible: 0 };
@@ -137,6 +142,11 @@
     return Object.keys(installed).filter(function (id) { return id !== except && widgetKind(installed[id].kind) && installed[id].enabled !== false; }).length;
   }
   function entryFor(id) { for (var i = 0; i < catalog.length; i++) if (catalog[i].id === id) return catalog[i]; return null; }
+  /* The current installation of an ID, including a stored package this build cannot read (dormant):
+     it still blocks a downgrade or a kind change of the same ID. */
+  function prior(id) { return has(installed, id) ? installed[id] : has(dormant, id) ? dormant[id] : null; }
+  /* True when `current` has a comparable version that is not older than `version`. */
+  function upToDate(version, current) { return typeof current.version === 'string' && VERSION.test(current.version) && !newer(version, current.version); }
 
   /* ---------- Storage ---------- */
   function save(nextInstalled, nextCatalog, nextInfo) {
@@ -236,11 +246,12 @@
         body.kind = typeof body.kind === 'string' ? body.kind : '';
         item = body.kind === entry.kind ? offer(body, false) : null;
         if (!item || canon(item) !== canon(expected)) fail('Package does not match catalog.');
-        current = installed[entry.id];
+        current = prior(entry.id);
         if (current && current.kind !== item.kind) fail('An update cannot change the add-on type.');
-        if (current && !newer(item.version, current.version)) fail('This add-on is already up to date.');
-        // Updates keep their state; a new widget beyond the limit arrives disabled.
-        item.enabled = current ? current.enabled !== false : !widgetKind(item.kind) || active() < MAX_WIDGETS;
+        if (current && upToDate(item.version, current)) fail('This add-on is already up to date.');
+        // Updates keep their state; a new widget beyond the limit arrives disabled. A dormant package
+        // is not counted as active, so its widget is checked against the limit again.
+        item.enabled = (!current || current.enabled !== false) && (!widgetKind(item.kind) || has(installed, entry.id) || active() < MAX_WIDGETS);
         next = copy(installed); next[entry.id] = item;
         save(next, catalog, info);
         delete dormant[entry.id];
@@ -249,15 +260,18 @@
     });
   }
   function install(id) {
-    var entry = entryFor(id), current = installed[id];
+    var entry = entryFor(id), current = prior(id);
     if (!entry) refuse('Refresh the catalog before downloading.');
     if (current && current.kind !== entry.kind) refuse('An update cannot change the add-on type.');
-    if (current && !newer(entry.version, current.version)) refuse('This add-on is already up to date.');
+    if (current && upToDate(entry.version, current)) refuse('This add-on is already up to date.');
     busy = true; error = ''; batch = { status: 'idle', completed: 0, total: 0 };
     fetchPackage(entry, finish);
   }
   function updateAll() {
-    var targets = catalog.filter(function (entry) { var current = installed[entry.id]; return current && current.kind === entry.kind && newer(entry.version, current.version); });
+    var targets = catalog.filter(function (entry) {
+      var current = prior(entry.id);
+      return !!current && current.kind === entry.kind && typeof current.version === 'string' && VERSION.test(current.version) && newer(entry.version, current.version);
+    });
     busy = true; error = ''; batch = { status: 'running', completed: 0, total: targets.length };
     (function next(i) {
       if (i >= targets.length) { batch = { status: 'complete', completed: i, total: targets.length }; finish(''); return; }
@@ -279,7 +293,7 @@
   }
   function remove(id) { change(id, function (next) { delete next[id]; }); }
   function toggle(id) {
-    var item = installed[id];
+    var item = has(installed, id) ? installed[id] : null;
     if (item && item.enabled === false && widgetKind(item.kind) && active(id) >= MAX_WIDGETS) refuse('Disable another widget first (maximum three active widgets).');
     change(id, function (next) { next[id].enabled = next[id].enabled === false; });
   }

@@ -76,6 +76,8 @@ function installAll(h, items, bodies = {}) {
   }
   return h.state();
 }
+/* A storage record as tizen-store.js writes it. */
+function record(data, seq = 1) { const json = JSON.stringify(data); return JSON.stringify({ v: 1, seq, sum: hex(json), data: json }); }
 function installWith(h, id, response) {
   assert.deepEqual(plain(h.addons({ action: 'install', id })), { ok: true });
   const xhr = h.xhrs[h.xhrs.length - 1];
@@ -115,6 +117,25 @@ test('refresh sends one plain GET to the reviewed catalog and blocks a second re
   assert.equal(h.state().busy, true);
   for (const action of ['refresh', 'install', 'remove', 'toggle', 'updateAll']) assert.throws(() => h.addons({ action, id: 'note' }), /Another add-on operation is running\./);
   assert.equal(h.xhrs.length, 1);
+});
+
+test('install holds the busy gate until its package request ends', () => {
+  const h = harness(), note = pkg('note'), other = pkg('other');
+  installAll(h, [other]);
+  refreshWith(h, { body: bytes(catalog([listed(note), listed(other)])) });
+  assert.deepEqual(plain(h.addons({ action: 'install', id: 'note' })), { ok: true });
+  const n = h.xhrs.length, events = h.events.length;
+  assert.equal(h.state().busy, true, 'the UI sees the download as running');
+  for (const action of ['refresh', 'install', 'remove', 'toggle', 'updateAll']) {
+    for (const id of ['note', 'other']) assert.throws(() => h.addons({ action, id }), /^Error: Another add-on operation is running\.$/, action + ' ' + id);
+  }
+  assert.equal(h.xhrs.length, n, 'no second request while the package downloads');
+  assert.equal(h.state().installed.other.enabled, true, 'a refused toggle changes nothing');
+  h.xhrs[n - 1].respond({ body: bytes(JSON.stringify(note)) }); h.flush();
+  const s = h.state();
+  assert.equal(s.busy, false); assert.equal(s.error, '');
+  assert.equal(s.installed.note.enabled, true);
+  assert.equal(h.events.length, events + 1, 'refused requests emit nothing');
 });
 
 test('a valid catalog offers text and clock widgets, skips other kinds and reports the count', () => {
@@ -203,9 +224,23 @@ test('a clock zone this engine cannot format is skipped, not fatal', () => {
   assert.deepEqual(refreshWith(harness(), { body }).catalog.map(e => e.id), ['india', 'note']);
 });
 
-test('IDs that match Object.prototype keys are ordinary IDs', () => {
-  const s = refreshWith(harness(), { body: bytes(catalog([widget('constructor'), widget('note')])) });
-  assert.equal(s.error, ''); assert.deepEqual(s.catalog.map(e => e.id), ['constructor', 'note']);
+test('"constructor", the one Object.prototype key the ID pattern could match, is not an add-on ID', () => {
+  const h = harness();
+  refreshWith(h, { body: bytes(catalog([widget('keep')])) });
+  let s = refreshWith(h, { body: bytes(catalog([widget('constructor'), widget('note')])) });
+  assert.equal(s.error, 'Unsupported package identity or API.');
+  assert.deepEqual(s.catalog.map(e => e.id), ['keep'], 'the previous catalog is kept');
+  assert.throws(() => h.addons({ action: 'install', id: 'constructor' }), /^Error: Refresh the catalog before downloading\.$/);
+  for (const action of ['toggle', 'remove']) assert.throws(() => h.addons({ action, id: 'constructor' }), /^Error: Add-on is not installed\.$/);
+  assert.equal(h.api.installed('constructor'), null);
+  assert.equal(h.api.enabled('constructor'), false);
+  // A stored record under that key is not read either.
+  const data = { installed: { constructor: { ...pkg('constructor'), enabled: true }, note: { ...pkg('note'), enabled: true } }, catalog: [listed(pkg('constructor')), listed(pkg('note'))], catalogInfo: { checked: true, total: 2, compatible: 2 } };
+  s = harness({ local: storage({ [STORE + '.a']: record(data) }) }).state();
+  assert.deepEqual(Object.keys(s.installed), ['note']);
+  assert.deepEqual(s.catalog.map(e => e.id), ['note']);
+  // IDs that only contain the word stay ordinary IDs.
+  assert.equal(refreshWith(harness(), { body: bytes(catalog([widget('constructors'), widget('my-constructor')])) }).error, '');
 });
 
 test('engine exception text never reaches the UI', () => {
@@ -421,10 +456,15 @@ test('updateAll updates one at a time and stops at the first failure', () => {
   assert.equal(s.busy, true);
   assert.deepEqual(s.batch, { status: 'running', completed: 0, total: 3, name: 'Widget u1' });
   assert.equal(h.xhrs.length, start + 1, 'one request at a time');
+  const gated = () => { for (const action of ['refresh', 'install', 'remove', 'toggle', 'updateAll']) assert.throws(() => h.addons({ action, id: 'u3' }), /^Error: Another add-on operation is running\.$/, action); };
+  gated();
+  assert.equal(h.xhrs.length, start + 1, 'a refused request sends nothing');
   h.xhrs[start].respond({ body: bytes(JSON.stringify(next[0])) }); h.flush();
   s = h.state();
   assert.equal(s.installed.u1.version, '1.1.0');
   assert.deepEqual(s.batch, { status: 'running', completed: 1, total: 3, name: 'Widget u2' });
+  assert.equal(s.busy, true, 'the gate stays closed between packages');
+  gated();
   assert.equal(h.xhrs.length, start + 2);
   h.xhrs[start + 1].respond({ body: bytes(JSON.stringify(next[1]) + ' ') }); h.flush();
   s = h.state();
@@ -537,24 +577,100 @@ test('registered kinds are offered, validated and kept outside the widget limit'
   }
 });
 
+test('an enabled registered kind leaves all three widget slots free', () => {
+  const weather = { widget: false, validate: entry => ({ city: String(entry.city || 'Berlin') }) };
+  const h = harness({ kinds: [['weather', weather]] });
+  const forecast = pkg('forecast', { kind: 'weather', text: undefined, city: 'Berlin' });
+  let s = installAll(h, [forecast, pkg('w1'), pkg('w2'), pkg('w3')]);
+  assert.equal(s.installed.forecast.enabled, true);
+  assert.equal(s.installed.w3.enabled, true, 'a third text widget is enabled next to an enabled weather add-on');
+  h.addons({ action: 'toggle', id: 'w3' }); h.flush();
+  h.addons({ action: 'toggle', id: 'w3' }); h.flush();
+  s = h.state();
+  assert.equal(s.error, '');
+  assert.equal(s.installed.w3.enabled, true, 're-enabling the third widget is allowed');
+});
+
+test('a dormant package still blocks a downgrade or a kind change of its ID', () => {
+  const local = storage(), weather = { widget: false, validate: entry => ({ city: String(entry.city || 'Berlin') }) };
+  const v2 = pkg('forecast', { kind: 'weather', text: undefined, version: '2.0.0', city: 'Berlin' });
+  let h = harness({ local, kinds: [['weather', weather]] });
+  installAll(h, [v2]);
+  h.addons({ action: 'toggle', id: 'forecast' }); h.flush();
+  const stored = h.state().installed.forecast;
+  assert.equal(stored.enabled, false);
+  // Without the weather module the package is kept as stored. A text entry under the same ID is another kind.
+  h = harness({ local });
+  assert.equal(h.api.installed('forecast'), null);
+  refreshWith(h, { body: bytes(catalog([listed(pkg('forecast', { version: '3.0.0' }))])) });
+  const requests = h.xhrs.length;
+  assert.throws(() => h.addons({ action: 'install', id: 'forecast' }), /^Error: An update cannot change the add-on type\.$/);
+  h.flush();
+  h.addons({ action: 'updateAll' }); h.flush();
+  assert.deepEqual(h.state().batch, { status: 'complete', completed: 0, total: 0 }, 'Update all skips another kind');
+  assert.equal(h.xhrs.length, requests, 'nothing is downloaded');
+  assert.deepEqual(harness({ local, kinds: [['weather', weather]] }).state().installed.forecast, stored, 'the weather package is intact');
+  // A stricter validator sets the stored package aside; an older or equal catalog version is still refused.
+  const strict = { widget: false, validate: entry => { if (typeof entry.units !== 'string') throw new Error('Weather needs units.'); return { city: entry.city, units: entry.units }; } };
+  h = harness({ local, kinds: [['weather', strict]] });
+  assert.equal(h.api.installed('forecast'), null);
+  for (const version of ['1.0.0', '2.0.0']) {
+    refreshWith(h, { body: bytes(catalog([listed(pkg('forecast', { kind: 'weather', text: undefined, version, city: 'Berlin', units: 'metric' }))])) });
+    assert.throws(() => h.addons({ action: 'install', id: 'forecast' }), /^Error: This add-on is already up to date\.$/, version);
+    h.flush();
+  }
+  // A newer version is an update: Update all includes it, and it keeps the disabled state.
+  const v3 = pkg('forecast', { kind: 'weather', text: undefined, version: '3.0.0', city: 'Berlin', units: 'metric' });
+  refreshWith(h, { body: bytes(catalog([listed(v3)])) });
+  h.addons({ action: 'updateAll' });
+  assert.equal(h.state().batch.total, 1);
+  h.xhrs[h.xhrs.length - 1].respond({ body: bytes(JSON.stringify(v3)) }); h.flush();
+  const s = h.state();
+  assert.equal(s.error, '');
+  assert.deepEqual(s.installed.forecast, { api: 1, id: 'forecast', name: 'Widget forecast', version: '3.0.0', kind: 'weather', description: 'A short note', author: 'Someone', license: 'MIT', city: 'Berlin', units: 'metric', enabled: false });
+});
+
+test('a dormant widget that is updated is checked against the widget limit', () => {
+  const broken = { ...pkg('old'), text: 'x'.repeat(501), enabled: true };
+  const active = ['w1', 'w2', 'w3'].map(id => ({ ...pkg(id), enabled: true }));
+  const installed = Object.fromEntries([broken].concat(active).map(item => [item.id, item]));
+  const local = storage({ [STORE + '.a']: record({ installed, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } }) });
+  const h = harness({ local });
+  assert.deepEqual(Object.keys(h.state().installed), ['w1', 'w2', 'w3'], 'the unreadable widget is set aside');
+  refreshWith(h, { body: bytes(catalog([listed(pkg('old'))])) });
+  assert.throws(() => h.addons({ action: 'install', id: 'old' }), /^Error: This add-on is already up to date\.$/);
+  h.flush();
+  const fixed = pkg('old', { version: '1.0.1', text: 'Fixed' });
+  refreshWith(h, { body: bytes(catalog([listed(fixed)])) });
+  const s = installWith(h, 'old', { body: bytes(JSON.stringify(fixed)) });
+  assert.equal(s.error, '');
+  assert.deepEqual(s.installed.old, { ...fixed, enabled: false }, 'a fourth widget arrives disabled');
+  assert.deepEqual(Object.keys(s.installed).filter(id => s.installed[id].enabled), ['w1', 'w2', 'w3']);
+});
+
 test('Spotify needs a registered kind; registration rules', () => {
   const plainHost = refreshWith(harness(), { body: bytes(catalog([spotify])) });
   assert.deepEqual(plainHost.catalog, []);
   const spot = { widget: false, validate: entry => ({ scopes: Array.isArray(entry.scopes) ? entry.scopes.slice(0, 4) : [] }) };
   const withKind = refreshWith(harness({ kinds: [['spotify', spot]] }), { body: bytes(catalog([{ ...spotify, scopes: ['user-read-playback-state'] }])) });
   assert.deepEqual(withKind.catalog.map(e => [e.id, e.kind, e.scopes]), [['spotify', 'spotify', ['user-read-playback-state']]]);
-  const h = harness();
-  for (const [kind, definition] of [['text', spot], ['clock', spot], ['native', spot], ['Bad', spot], ['', spot], ['x'.repeat(33), spot], ['ok', {}], ['ok', { validate() {} }], ['ok', { validate() {}, widget: true }]]) {
-    assert.throws(() => h.kinds.register(kind, definition), /Add-on kind/);
-  }
-  h.kinds.register('later', spot);
-  assert.equal(h.kinds.registered('later'), true);
-  assert.throws(() => h.kinds.register('later', spot), /cannot be registered/);
-  // A faulty early registration is reported asynchronously and the host still starts.
-  const faulty = harness({ kinds: [['text', spot], ['fine', spot]] });
+  // Faulty early registrations are reported asynchronously, in order, and the host still starts.
+  const faulty = harness({ kinds: [['text', spot], ['clock', spot], ['native', spot], ['Bad', spot], ['', spot], ['x'.repeat(33), spot], ['ok1', {}], ['ok2', { validate() {} }], ['ok3', { validate() {}, widget: true }], ['later', spot], ['later', spot]] });
   assert.equal(typeof faulty.addons, 'function');
-  assert.equal(faulty.kinds.registered('fine'), true);
-  assert.throws(() => faulty.flush(), /Add-on kind cannot be registered: text/);
+  assert.equal(faulty.kinds.registered('later'), true);
+  assert.equal(faulty.kinds.registered('ok1'), false);
+  const errors = [];
+  for (;;) { try { faulty.flush(); break; } catch (e) { errors.push(e.message); } }
+  assert.deepEqual(errors, ['text', 'clock', 'native', 'Bad', '', 'x'.repeat(33)].map(kind => 'Add-on kind cannot be registered: ' + kind)
+    .concat(['ok1', 'ok2', 'ok3'].map(kind => 'Add-on kind needs validate() and widget: false: ' + kind), ['Add-on kind cannot be registered: later']));
+});
+
+test('a kind registered after the host loaded is refused on every platform', () => {
+  const spot = { widget: false, validate: () => ({}) };
+  for (const h of [harness(), harness({ tizen: false }), harness({ platform: 'android' })]) {
+    assert.throws(() => h.kinds.register('weather', spot), /^Error: Add-on kinds must be registered before tizen-addons\.js loads: weather$/);
+    assert.equal(h.kinds.registered('weather'), false);
+  }
 });
 
 test('CleanTVAddons reports copies and calls listeners after every change', () => {
