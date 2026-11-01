@@ -47,7 +47,7 @@ def validate(project):
 
 class Store:
     def __init__(self,path,platform='android'):
-        self.path=path; self.lock=threading.Lock(); self.token=secrets.token_urlsafe(32); self.job=None
+        self.path=path; self.lock=threading.Lock(); self.restart_lock=threading.Lock(); self.token=secrets.token_urlsafe(32); self.job=None
         previous=sorted((path/'releases').glob('*/status.json'),key=lambda p:p.stat().st_mtime)
         if previous:self.job=previous[-1].parent.name
         path.mkdir(parents=True,exist_ok=True)
@@ -69,6 +69,15 @@ class Store:
     def read(self):
         raw=(self.path/'project.json').read_bytes()
         return json.loads(raw),hashlib.sha256(raw).hexdigest()
+
+    def restart_tv(self):
+        # One debug restart at a time: a second click (or a double submit) is refused, never a second kill.
+        if not self.restart_lock.acquire(blocking=False):
+            raise ValueError('CleanTV wird bereits im Debug-Modus neu gestartet. Bitte warten.')
+        try:
+            return self.tv.restart_debug()
+        finally:
+            self.restart_lock.release()
 
     def import_tv(self, expected):
         # Do not hold the draft lock during device I/O. Recheck before committing.
@@ -208,7 +217,7 @@ class Editor(Preview):
             if route=='/api/editor/tv/debug':
                 # Announced in the UI: CleanTV restarts on the TV. Fixed commands; the body is ignored.
                 if not hasattr(store.tv,'restart_debug'):raise ValueError('Der Debug-Neustart gibt es nur für Samsung-Fernseher.')
-                return self.json(store.tv.restart_debug())
+                return self.json(store.restart_tv())
             if route=='/api/editor/tv/import':return self.json(store.import_tv(value.get('etag')))
             if route=='/api/editor/agent/send':return self.json(store.agent.submit(value.get('text'),value.get('context',{})))
             if route=='/api/editor/agent/stop':return self.json(store.agent.stop())

@@ -46,7 +46,7 @@ try{
  await page.route(url=>!url.href.startsWith(app.url),route=>new URL(route.request().url()).hostname==='raw.githubusercontent.com'?route.fulfill({status:200,contentType:'image/jpeg',body:jpeg}):route.abort());
  await page.route('**/api/editor/agent/state',route=>route.fulfill({json:{available:true,active:false,activity:'Test',messages:[]}}));
  const readyStatus={platform:'tizen',configured:true,connected:true,debug:true,cleantv:true,state:'ready',message:'TV verbunden · Debug-Modus an · CleanTV bereit',label:'Samsung-Fernseher',address:'192.0.2.10:26101',version:'0.9.0',checkedAt:Date.now()/1000,ready:false,releaseState:'unsupported',releaseMessage:'Übertragung auf Samsung erfolgt über npm run tv:install.'};
- let tvStatus=readyStatus,feed={seq:0,phase:'live',message:'',state:null},mirrorRequests=0;const debugPosts=[];
+ let tvStatus=readyStatus,feed={seq:0,phase:'live',message:'',state:null},mirrorRequests=0,holdDebug=null;const debugPosts=[];
  const push=state=>{feed={...feed,seq:feed.seq+1,state:structuredClone(state)};};
  await page.route('**/api/editor/tv/status',route=>route.fulfill({json:{...tvStatus,checkedAt:Date.now()/1000}}));
  await page.route('**/api/editor/tv/mirror?*',async route=>{
@@ -55,7 +55,7 @@ try{
   const body={seq:feed.seq,phase:feed.phase,message:feed.message,age:0,localVersion:'0.9.0'};if(since!==feed.seq&&feed.state)body.state=feed.state;
   await route.fulfill({json:body}).catch(()=>{});
  });
- await page.route('**/api/editor/tv/debug',route=>{debugPosts.push(route.request().headers()['x-cleanframe-token']);return route.fulfill({json:readyStatus});});
+ await page.route('**/api/editor/tv/debug',async route=>{debugPosts.push(route.request().headers()['x-cleanframe-token']);if(holdDebug)await holdDebug;return route.fulfill({json:readyStatus});});
  await page.goto(app.url+'/editor/');await ready(page);await page.evaluate(()=>CleanFrameEditor.save());
  await page.waitForFunction(()=>document.querySelector('#tvStatus span').textContent==='CleanTV bereit');
  const draftStorage=await page.evaluate(()=>localStorage.getItem('cleantv.home.v1')),draft=await page.evaluate(()=>JSON.stringify(CleanFrameEditor.project));
@@ -103,9 +103,19 @@ try{
  await page.waitForFunction(()=>/Debug-Modusaus/.test(document.querySelector('#tvDetails').textContent)&&document.querySelector('#tvStatus span').textContent==='TV verbunden');
  await page.click('#restartDebug');await page.waitForSelector('#dialog[open]');
  assert.match(await page.locator('#dialogBody').textContent(),/CleanTV wird auf dem Fernseher beendet/);assert.equal(await page.locator('#dialogSave').textContent(),'Neu starten');
+ assert.match(await page.locator('#dialogBody').textContent(),/alle Netzwerkschnittstellen/,'The restart warning names the LAN exposure');
  await page.click('#dialogCancel');await page.waitForTimeout(200);assert.equal(debugPosts.length,0,'Cancel never restarts the TV app');
- await page.click('#mirrorDebug');await page.waitForSelector('#dialog[open]');await page.click('#dialogSave');
- await page.waitForFunction(()=>!document.querySelector('#dialog').open);assert.equal(debugPosts.length,1);assert.ok(debugPosts[0]);
+ // A double submit (click, requestSubmit, Enter) must restart CleanTV only once.
+ let release;holdDebug=new Promise(r=>{release=r;});
+ await page.click('#mirrorDebug');await page.waitForSelector('#dialog[open]');
+ await page.evaluate(()=>{const b=document.getElementById('dialogSave');b.click();document.getElementById('dialogForm').requestSubmit();b.click();});
+ await page.keyboard.press('Enter');
+ await page.waitForFunction(()=>document.getElementById('dialogSave').disabled,null,{timeout:5000});
+ assert.equal(await page.locator('#dialogSave').textContent(),'Wird neu gestartet …','The restart button shows progress while it runs');
+ await page.waitForTimeout(300);release();holdDebug=null;
+ await page.waitForFunction(()=>!document.querySelector('#dialog').open);
+ assert.equal(debugPosts.length,1,'A double submit restarts CleanTV only once');assert.ok(debugPosts[0]);
+ await page.waitForFunction(()=>!document.getElementById('dialogSave').disabled,null,{timeout:5000});
  assert.equal(await page.locator('#dialogSave').textContent(),'Speichern','Other dialogs keep their label');
  feed={...feed,phase:'live',message:''};tvStatus=readyStatus;
  console.log('Hidden tabs stop reading; the debug restart needs an explicit confirmation with the German warning.');

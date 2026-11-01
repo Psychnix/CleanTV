@@ -52,7 +52,8 @@ if args[:2] == ['-s', target] and args[2:5] == ['shell', '0', 'kill']:
     if state.get('kill_stops', True): state['running'] = False; save()
     out('Pkgid: %s is Terminated\n' % args[5])
 if args[:2] == ['-s', target] and args[2:5] == ['shell', '0', 'debug']:
-    if state.get('debug_refuses') or state.get('running') or len(args) < 7: out(state.get('debug_reply', 'closed') + '\n')
+    if 'debug_reply' in state: out(state['debug_reply'] + '\n')
+    if state.get('debug_refuses') or state.get('running') or len(args) < 7: out('closed\n')
     state['running'] = True; save()
     out('... successfully launched pid = 8732 with debug 1 port: %d\n' % state.get('remote', 48283))
 if args[:2] == ['-s', target] and args[2] == 'forward':
@@ -351,17 +352,78 @@ class TizenBackendTests(unittest.TestCase):
 
     def test_debug_launch_parsing_and_closed_reply(self):
         self.assertEqual(parse_debug_port('... successfully launched pid = 8732 with debug 1 port: 48283\n'), 48283)
-        for reply in ['closed\n', '', 'successfully launched pid = 1 with debug 1 port: 99999']:
+        for reply in ['', 'successfully launched pid = 1 with debug 1 port: 99999']:
             with self.assertRaises(ValueError):
                 parse_debug_port(reply)
-        with self.assertRaises(ValueError) as error:
+        with self.assertRaises(editor_tizen.DebugRefused) as error:
             parse_debug_port('closed')
-        self.assertIn('closed', str(error.exception))
+        self.assertIn('abgelehnt', str(error.exception))
         self.fake_sdb(reachable=True, connected=True, running=True, kill_stops=False)
-        with self.assertRaises(ValueError) as error:
-            self.tv.restart_debug()
-        self.assertIn('closed', str(error.exception))
-        self.assertFalse(any(call[2:3] == ['forward'] for call in self.calls()), 'No forward after a refused launch')
+        with patch.object(editor_tizen, 'DEBUG_RETRY_DELAY', 0):
+            with self.assertRaises(ValueError) as error:
+                self.tv.restart_debug()
+        # Debug stays refused ("closed"); CleanTV is brought back with a normal launch.
+        self.assertIn('normal wieder gestartet', str(error.exception))
+        self.assertIn(['-s', TARGET, 'shell', '0', 'execute', 'TestPkg001.CleanTV'], self.calls())
+        self.assertEqual(self.forward_creates(), [], 'No forward after a refused launch')
+        self.assertIsNone(self.cache(), 'A refused launch caches no remote port')
+
+    def test_failed_debug_start_after_kill_relaunches_cleantv(self):
+        self.fake_sdb(reachable=True, connected=True, running=True, debug_refuses=True)
+        with patch.object(editor_tizen, 'DEBUG_RETRY_DELAY', 0):
+            with self.assertRaises(ValueError) as error:
+                self.tv.restart_debug()
+        debugs = [c for c in self.calls() if c[2:5] == ['shell', '0', 'debug']]
+        self.assertEqual(len(debugs), editor_tizen.DEBUG_ATTEMPTS, 'The debug launch is retried, then gives up')
+        self.assertIn(['-s', TARGET, 'shell', '0', 'execute', 'TestPkg001.CleanTV'], self.calls(), 'CleanTV is relaunched normally')
+        self.assertIn('normal wieder gestartet', str(error.exception))
+
+    def test_failed_debug_start_and_failed_relaunch_say_so(self):
+        self.fake_sdb(reachable=True, connected=True, running=True, debug_refuses=True, execute_fails=True)
+        with patch.object(editor_tizen, 'DEBUG_RETRY_DELAY', 0):
+            with self.assertRaises(ValueError) as error:
+                self.tv.restart_debug()
+        self.assertIn('Fernbedienung', str(error.exception), 'A failed relaunch tells the owner to open CleanTV by hand')
+
+    def test_non_closed_debug_reply_is_not_retried_but_relaunches(self):
+        self.fake_sdb(reachable=True, connected=True, running=True, debug_reply='error: launchpad busy')
+        with patch.object(editor_tizen, 'DEBUG_RETRY_DELAY', 0):
+            with self.assertRaises(ValueError):
+                self.tv.restart_debug()
+        debugs = [c for c in self.calls() if c[2:5] == ['shell', '0', 'debug']]
+        self.assertEqual(len(debugs), 1, 'A non-closed reply is a hard failure, not retried')
+        self.assertIn(['-s', TARGET, 'shell', '0', 'execute', 'TestPkg001.CleanTV'], self.calls())
+
+    def test_concurrent_restart_is_refused(self):
+        fake = self.inspector()
+        self.fake_sdb(reachable=True, connected=True, running=True, remote=48283)
+        started, gate, results = threading.Event(), threading.Event(), {}
+        real_sdb = self.tv.sdb
+
+        def gated(args, timeout=15):
+            if args[2:5] == ['shell', '0', 'kill']:
+                started.set()
+                gate.wait(5)  # hold the device while a second restart is attempted
+            return real_sdb(args, timeout=timeout)
+
+        def run(key):
+            try:
+                results[key] = self.store.restart_tv()
+            except ValueError as error:
+                results[key] = error
+
+        with patch.object(self.tv, 'sdb', side_effect=gated), patch.object(self.tv, 'free_port', return_value=fake.port):
+            first = threading.Thread(target=run, args=('first',)); first.start()
+            self.assertTrue(started.wait(5), 'The first restart reaches the kill and holds the lock')
+            second = threading.Thread(target=run, args=('second',)); second.start()
+            second.join(5)
+            gate.set()
+            first.join(10)
+        refused = [v for v in results.values() if isinstance(v, ValueError)]
+        self.assertEqual(len(refused), 1, 'Exactly one restart is refused')
+        self.assertIn('bereits', str(refused[0]))
+        self.assertEqual(len([c for c in self.calls() if c[2:5] == ['shell', '0', 'kill']]), 1, 'Only one kill')
+        self.assertEqual(len([c for c in self.calls() if c[2:5] == ['shell', '0', 'debug']]), 1, 'Only one debug launch')
 
     def test_json_target_choice(self):
         page = dict(id='page1', type='page', title='CleanTV', url='file:///index.html', webSocketDebuggerUrl='ws://127.0.0.1:9333/devtools/page/page1')

@@ -32,6 +32,13 @@ WALL_FIELDS = ['id', 'name', 'rev', 'tone', 'ut', 'frostVeil', 'listColumn', 'do
 RELEASE = 'Für Samsung bereitet der Editor keine Übertragung vor. Installation: npm run package und npm run tv:install (docs/development.md).'
 OFFLINE = 'TV nicht erreichbar. Ist der Fernseher eingeschaltet und im selben Netz?'
 DEBUG_OFF = 'Debug-Modus aus. Für den Live-Spiegel „CleanTV im Debug-Modus neu starten“ wählen.'
+# The kill can take a moment on the TV; a "closed" reply means CleanTV had not fully stopped yet.
+DEBUG_ATTEMPTS = 5
+DEBUG_RETRY_DELAY = 1.5
+
+
+class DebugRefused(ValueError):
+    """The TV answered `closed`: CleanTV was not fully stopped or the timeout argument was missing."""
 
 
 def tizen_config(root=ROOT):
@@ -80,7 +87,7 @@ def parse_debug_port(output):
     if match and 0 < int(match.group(1)) < 65536:
         return int(match.group(1))
     if 'closed' in output.lower():
-        raise ValueError('Der Fernseher hat den Debug-Start abgelehnt („closed“). CleanTV lief noch oder das Zeitlimit fehlte. Bitte erneut versuchen.')
+        raise DebugRefused('Der Fernseher hat den Debug-Start abgelehnt („closed“). CleanTV war noch nicht ganz beendet oder das Zeitlimit fehlte.')
     raise ValueError('Der Debug-Start wurde vom Fernseher nicht bestätigt. ' + output.strip()[:160])
 
 
@@ -300,6 +307,19 @@ class TizenTelevision:
             probe.bind(('127.0.0.1', 0))
             return probe.getsockname()[1]
 
+    def relaunch_plain(self):
+        """Bring CleanTV back with a normal launch after a failed debug start, so the TV is never dark."""
+        config = self.usable()
+        self.sdb(['-s', config['target'], 'shell', '0', 'execute', config['app_id']], timeout=45)
+
+    def after_failed_debug(self, prefix):
+        """Recover CleanTV after the kill, then describe what happened. Returns the error to raise."""
+        try:
+            self.relaunch_plain()
+        except ValueError:
+            return ValueError(prefix + ' CleanTV ließ sich auch nicht normal starten. Bitte CleanTV am Fernseher mit der Fernbedienung öffnen.')
+        return ValueError(prefix + ' CleanTV wurde normal wieder gestartet. Bitte das Bild am Fernseher prüfen und erneut versuchen.')
+
     def restart_debug(self):
         """Explicit owner action: CleanTV restarts on the TV. Settings, add-ons and sign-ins stay."""
         with self.device_lock:
@@ -310,15 +330,21 @@ class TizenTelevision:
                 raise ValueError(OFFLINE)
             self.sdb(['-s', target, 'shell', '0', 'kill', config['package_id']], timeout=30)
             # Only with the timeout argument, and only after the app stopped, does the TV open a debug port.
-            # The kill can take a moment on the TV, so a "closed" reply is retried once.
+            # A "closed" reply means CleanTV had not fully stopped yet, so it is retried a few times.
+            # Any failure after the kill must still bring CleanTV back, so it is never left dark.
             launch = ['-s', target, 'shell', '0', 'debug', config['app_id'], '300']
-            try:
-                remote = parse_debug_port(self.sdb(launch, timeout=60))
-            except ValueError as error:
-                if 'closed' not in str(error):
-                    raise
-                time.sleep(2)
-                remote = parse_debug_port(self.sdb(launch, timeout=60))
+            remote = None
+            for attempt in range(DEBUG_ATTEMPTS):
+                try:
+                    remote = parse_debug_port(self.sdb(launch, timeout=60))
+                    break
+                except DebugRefused:
+                    if attempt + 1 < DEBUG_ATTEMPTS:
+                        time.sleep(DEBUG_RETRY_DELAY)
+                        continue
+                    raise self.after_failed_debug('Der Fernseher hat den Debug-Start mehrfach abgelehnt.')
+                except ValueError:
+                    raise self.after_failed_debug('Der Debug-Start ist fehlgeschlagen.')
             self.remember_remote(remote)
             # Poll /json inside one short-lived forward until CleanTV's page reports in.
             deadline = time.monotonic() + 20

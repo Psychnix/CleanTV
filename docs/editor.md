@@ -218,7 +218,12 @@ while debug mode is off) first shows a warning and needs confirmation. It then r
 `sdb shell 0 kill <package>` and `sdb shell 0 debug <app> 300`: CleanTV closes on the TV
 and starts again, so the TV picture is gone for a moment. Settings, add-ons and the Spotify
 sign-in stay. Without the timeout argument, or while CleanTV still runs, the TV answers
-`closed`; the editor reports that and forwards nothing. Only the reported *remote* debug
+`closed`; because the kill can take a moment, that reply is retried a few times. If the
+debug start still fails — or fails for another reason — the editor runs a normal
+`sdb shell 0 execute <app>` so CleanTV is never left killed on the TV, and the error says
+whether CleanTV came back on its own or must be opened with the remote. Only one debug
+restart runs at a time; a second request while one is in flight is refused, never a second
+kill. Only the reported *remote* debug
 port is remembered, in `.local/editor/tizen-inspector.json`. Each read (status `/json`
 probe, Live reader, import) opens its own short-lived `sdb forward`, exists only while that
 reader runs, and is removed the moment it stops; nothing stays listening between reads or
