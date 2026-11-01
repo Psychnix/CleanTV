@@ -45,14 +45,21 @@ if args[:1] == ['connect'] and args[1:] == [target]:
     if state.get('reachable'):
         state['connected'] = True; save(); out('connecting to %s ...\nconnected to %s\n' % (target, target))
     out('connecting to %s ...\nfailed to connect to %s\n' % (target, target))
+if args[:2] == ['-s', target] and args[2:4] == ['shell', '0'] and args[4:5] == ['execute']:
+    if state.get('execute_fails'): out('error: launch failed\n', 1)
+    out('... successfully launched pid = 8740\n')
 if args[:2] == ['-s', target] and args[2:5] == ['shell', '0', 'kill']:
     if state.get('kill_stops', True): state['running'] = False; save()
     out('Pkgid: %s is Terminated\n' % args[5])
 if args[:2] == ['-s', target] and args[2:5] == ['shell', '0', 'debug']:
-    if state.get('running') or len(args) < 7: out('closed\n')
+    if state.get('debug_refuses') or state.get('running') or len(args) < 7: out(state.get('debug_reply', 'closed') + '\n')
     state['running'] = True; save()
     out('... successfully launched pid = 8732 with debug 1 port: %d\n' % state.get('remote', 48283))
 if args[:2] == ['-s', target] and args[2] == 'forward':
+    if args[3:4] == ['--remove']:
+        state.setdefault('removes', []).append(args[4:]); save(); out('')
+    if state.get('bind_fails'):
+        out('error: cannot bind to port %s\n' % args[3], 1)
     state.setdefault('forwards', []).append(args[3:]); save(); out('')
 out('error: unknown command\n', 1)
 '''
@@ -165,9 +172,22 @@ class TizenBackendTests(unittest.TestCase):
         self.inspectors.append(fake)
         return fake
 
-    def remember_forward(self, port):
+    def remember_forward(self, remote=48283, local=None):
         (self.dir / 'editor').mkdir(parents=True, exist_ok=True)
-        (self.dir / 'editor' / 'tizen-inspector.json').write_text(json.dumps(dict(target=TARGET, local=port, remote=48283)))
+        value = dict(target=TARGET, remote=remote)
+        if local is not None:
+            value['local'] = local  # legacy cache from the first build
+        (self.dir / 'editor' / 'tizen-inspector.json').write_text(json.dumps(value))
+
+    def cache(self):
+        path = self.dir / 'editor' / 'tizen-inspector.json'
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def forward_creates(self):
+        return [c for c in self.calls() if c[2:3] == ['forward'] and c[3:4] != ['--remove']]
+
+    def forward_removes(self):
+        return [c for c in self.calls() if c[2:4] == ['forward', '--remove']]
 
     # --- Discovery -------------------------------------------------------------------------
     def test_finds_the_tv_from_device_and_signing_settings(self):
@@ -216,15 +236,21 @@ class TizenBackendTests(unittest.TestCase):
 
     def test_status_reuses_an_existing_inspector(self):
         fake = self.inspector()
-        self.remember_forward(fake.port)
+        self.remember_forward(remote=48283)
         self.fake_sdb(reachable=True, connected=True, running=True)
-        status = self.tv.status()
+        with patch.object(self.tv, 'free_port', return_value=fake.port):
+            status = self.tv.status()
         self.assertTrue(status['debug'])
         self.assertTrue(status['cleantv'])
         self.assertEqual(status['state'], 'ready')
         self.assertIn('Debug-Modus an', status['message'])
         self.assertIn('CleanTV bereit', status['message'])
-        self.assertEqual(self.calls(), [['devices']])
+        self.assertEqual(self.forward_creates(), [['-s', TARGET, 'forward', 'tcp:%d' % fake.port, 'tcp:48283']],
+                         'Status opens one short-lived forward for the /json read')
+        self.assertEqual(self.forward_removes(), [['-s', TARGET, 'forward', '--remove', 'tcp:%d' % fake.port]],
+                         'The status forward is always removed afterwards')
+        self.assertEqual(self.tv.open_forwards, set(), 'Nothing stays listening after status')
+        self.assertEqual(self.cache(), dict(target=TARGET, remote=48283), 'Only the remote port is cached')
         self.assertFalse(fake.connected.is_set(), 'Status reads only the /json listing')
 
     def test_restart_kills_relaunches_with_timeout_and_forwards(self):
@@ -238,8 +264,90 @@ class TizenBackendTests(unittest.TestCase):
         self.assertLess(calls.index(['-s', TARGET, 'shell', '0', 'kill', 'TestPkg001']), calls.index(['-s', TARGET, 'shell', '0', 'debug', 'TestPkg001.CleanTV', '300']))
         self.assertIn(['-s', TARGET, 'forward', 'tcp:%d' % fake.port, 'tcp:48283'], calls)
         self.assertEqual(status['state'], 'ready')
-        saved = json.loads((self.dir / 'editor' / 'tizen-inspector.json').read_text())
-        self.assertEqual((saved['local'], saved['remote']), (fake.port, 48283))
+        self.assertEqual(self.cache(), dict(target=TARGET, remote=48283), 'Only the remote debug port is cached, never a local port')
+        self.assertEqual(len(self.forward_creates()), len(self.forward_removes()), 'The restart forward is removed after the page answers')
+        self.assertEqual(self.tv.open_forwards, set())
+
+    def test_restart_leaves_no_forward_open(self):
+        fake = self.inspector()
+        self.fake_sdb(reachable=True, connected=True, running=True, remote=48283)
+        with patch.object(self.tv, 'free_port', return_value=fake.port):
+            self.tv.restart_debug()
+        self.assertEqual(self.tv.open_forwards, set(), 'The restart poll forward is closed')
+        self.assertEqual(len(self.forward_creates()), len(self.forward_removes()))
+
+    def test_cached_legacy_forward_is_removed_not_reused(self):
+        # A first-build cache named a persistent local port; it is removed once and dropped from the cache.
+        self.remember_forward(remote=48283, local=49999)
+        self.fake_sdb(reachable=True, connected=True, running=True)
+        self.assertEqual(self.tv.remote(), 48283)
+        self.assertIn(['-s', TARGET, 'forward', '--remove', 'tcp:49999'], self.calls())
+        self.assertEqual(self.cache(), dict(target=TARGET, remote=48283), 'The stale local port is dropped for good')
+        self.assertEqual(self.tv.remote(), 48283, 'The migrated cache reads again without another removal')
+        self.assertEqual(self.forward_removes().count(['-s', TARGET, 'forward', '--remove', 'tcp:49999']), 1)
+
+    def test_status_forgets_a_debug_port_that_no_longer_answers(self):
+        # Nothing listens on the forward: the cached debug port is gone, so status forgets it.
+        self.remember_forward(remote=48283)
+        self.fake_sdb(reachable=True, connected=True, running=True)
+        status = self.tv.status()
+        self.assertEqual(status['state'], 'connected')
+        self.assertFalse(status['debug'])
+        self.assertIsNone(self.cache(), 'A dead debug port is forgotten')
+        self.assertEqual(len(self.forward_creates()), len(self.forward_removes()), 'The probe forward is removed')
+        self.assertEqual(self.tv.open_forwards, set())
+
+    def test_status_survives_a_forward_that_cannot_bind(self):
+        # sdb cannot open the forward (port clash). Status stays connected and keeps the remote for a retry.
+        self.remember_forward(remote=48283)
+        self.fake_sdb(reachable=True, connected=True, running=True, bind_fails=True)
+        status = self.tv.status()
+        self.assertEqual(status['state'], 'connected')
+        self.assertFalse(status['debug'])
+        self.assertEqual(self.cache(), dict(target=TARGET, remote=48283), 'A bind failure keeps the remote for a later retry')
+        self.assertGreaterEqual(len(self.forward_creates()), 3, 'Three local ports are tried before giving up')
+        self.assertEqual(self.tv.open_forwards, set(), 'A forward that never bound is not left open')
+
+    def test_mirror_removes_its_forward_when_the_reader_stops(self):
+        fake = self.inspector([json.dumps(STATE)])
+        self.remember_forward(remote=48283)
+        mirror = self.store.mirror
+        mirror.IDLE = 0.6
+        with patch.dict(os.environ, CLEANTV_MIRROR_INTERVAL_MS='100'), \
+             patch.object(self.tv, 'free_port', return_value=fake.port), \
+             patch.object(self.tv, 'inspector', return_value=dict(target=dict(id='page1', ws='/devtools/page/page1'))):
+            result = mirror.read(-1, wait=5)
+            while 'state' not in result:
+                result = mirror.read(result['seq'], wait=5)
+            worker = mirror.worker
+            worker.join(timeout=8)
+            self.assertFalse(worker.is_alive())
+        self.assertGreaterEqual(len(self.forward_creates()), 1)
+        self.assertEqual(len(self.forward_creates()), len(self.forward_removes()), 'Every reader forward is removed')
+        self.assertEqual(self.tv.open_forwards, set(), 'Nothing stays listening after the reader stops')
+
+    def test_import_once_removes_its_forward_even_on_failure(self):
+        # The helper fails (no inspector on the forward); the short-lived forward is still removed.
+        self.remember_forward(remote=48283)
+        _, etag = self.store.read()
+        with patch.object(self.store.mirror, 'fresh', return_value=None), \
+             patch.object(self.tv, 'inspector', return_value=dict(target=dict(id='page1', ws='/devtools/page/page1'))):
+            with self.assertRaises(ValueError):
+                self.store.import_tv(etag)
+        self.assertEqual(self.tv.open_forwards, set())
+        self.assertEqual(len(self.forward_creates()), len(self.forward_removes()), 'The import forward is removed even on failure')
+
+    def test_close_removes_a_forward_left_open_by_a_crashed_reader(self):
+        self.tv.open_forwards.add(51515)
+        self.store.mirror.close()
+        self.assertEqual(self.tv.open_forwards, set())
+        self.assertIn(['-s', TARGET, 'forward', '--remove', 'tcp:51515'], self.calls())
+
+    def test_the_forward_exposure_is_explained_to_the_owner(self):
+        workspace = (ROOT / 'editor/workspace.js').read_text(encoding='utf-8')
+        self.assertIn('alle Netzwerkschnittstellen', workspace, 'The restart dialog warns that the forward is not loopback-only')
+        docs = (ROOT / 'docs/editor.md').read_text(encoding='utf-8')
+        self.assertIn('all network interfaces', docs)
 
     def test_debug_launch_parsing_and_closed_reply(self):
         self.assertEqual(parse_debug_port('... successfully launched pid = 8732 with debug 1 port: 48283\n'), 48283)
@@ -304,10 +412,12 @@ class TizenBackendTests(unittest.TestCase):
     def test_mirror_relays_changes_and_stops_when_unused(self):
         a, b = json.dumps(STATE), json.dumps(state(where__focusAction='home.app.netflix'))
         fake = self.inspector([a, a, b])
+        self.remember_forward(remote=48283)
         mirror = self.store.mirror
         mirror.IDLE = 1.0
         with patch.dict(os.environ, CLEANTV_MIRROR_INTERVAL_MS='100'), \
-             patch.object(self.tv, 'inspector', return_value=dict(port=fake.port, target=dict(id='page1', ws='/devtools/page/page1'))):
+             patch.object(self.tv, 'free_port', return_value=fake.port), \
+             patch.object(self.tv, 'inspector', return_value=dict(target=dict(id='page1', ws='/devtools/page/page1'))):
             first = mirror.read(-1, wait=8)
             while 'state' not in first:
                 first = mirror.read(first['seq'], wait=8)
@@ -324,6 +434,8 @@ class TizenBackendTests(unittest.TestCase):
             self.assertFalse(worker.is_alive(), 'The reader stops once no editor tab asks for it')
             self.assertTrue(fake.closed.wait(5), 'The CDP WebSocket is closed')
             self.assertEqual(mirror.status()['state'], 'stopped')
+        self.assertEqual(len(self.forward_creates()), len(self.forward_removes()), 'Every reader forward is removed')
+        self.assertEqual(self.tv.open_forwards, set(), 'Nothing stays listening after the reader stops')
 
     def test_mirror_without_debug_mode_waits_and_never_restarts(self):
         self.store.mirror.IDLE = .5
@@ -345,8 +457,10 @@ class TizenBackendTests(unittest.TestCase):
     # --- Import -----------------------------------------------------------------------------
     def test_import_reads_the_samsung_page_once(self):
         fake = self.inspector([json.dumps(STATE)])
+        self.remember_forward(remote=48283)
         before, etag = self.store.read()
-        with patch.object(self.tv, 'inspector', return_value=dict(port=fake.port, target=dict(id='page1', ws='/devtools/page/page1'))):
+        with patch.object(self.tv, 'free_port', return_value=fake.port), \
+             patch.object(self.tv, 'inspector', return_value=dict(target=dict(id='page1', ws='/devtools/page/page1'))):
             result = self.store.import_tv(etag)
         project, _ = self.store.read()
         committed = STATE['state']['committed']
@@ -363,6 +477,8 @@ class TizenBackendTests(unittest.TestCase):
         for private in ['Testtitel', 'Teststadt', 'Testgerät']:
             self.assertNotIn(private, saved, 'Spotify and weather details are never stored in the draft')
         self.assertEqual(len(fake.expressions), 1)
+        self.assertEqual(len(self.forward_creates()), len(self.forward_removes()), 'The import forward is removed')
+        self.assertEqual(self.tv.open_forwards, set())
 
     def test_import_uses_the_running_mirror_instead_of_a_second_client(self):
         _, etag = self.store.read()

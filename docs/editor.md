@@ -218,11 +218,17 @@ while debug mode is off) first shows a warning and needs confirmation. It then r
 `sdb shell 0 kill <package>` and `sdb shell 0 debug <app> 300`: CleanTV closes on the TV
 and starts again, so the TV picture is gone for a moment. Settings, add-ons and the Spotify
 sign-in stay. Without the timeout argument, or while CleanTV still runs, the TV answers
-`closed`; the editor reports that and forwards nothing. The reported port is forwarded to
-a free local port and checked through `/json` (a page at `file:///index.html`). The forward
-is remembered in `.local/editor/tizen-inspector.json`, so a restarted editor reuses an
-inspector that still runs. Debug mode ends when CleanTV is closed on the TV. Announce the
-restart to the owner and confirm the visible result with them (AGENTS.md).
+`closed`; the editor reports that and forwards nothing. Only the reported *remote* debug
+port is remembered, in `.local/editor/tizen-inspector.json`. Each read (status `/json`
+probe, Live reader, import) opens its own short-lived `sdb forward`, exists only while that
+reader runs, and is removed the moment it stops; nothing stays listening between reads or
+after Live or an import closes. `sdb forward` binds the local port on
+**all network interfaces** on this computer (not loopback-only), so any device on the LAN
+can reach an open forward while a reader runs; this is why the restart warning says so. A lost sdb
+forward (Wi-Fi blip, TV standby, sdb server restart) is simply re-created on the next read
+without restarting CleanTV, and a debug port that no longer answers `/json` is forgotten so
+status offers the explicit restart again. Debug mode ends when CleanTV is closed on the TV.
+Announce the restart to the owner and confirm the visible result with them (AGENTS.md).
 
 **Live-Spiegel, not video.** The TV's Chrome 47 page inspector sends no pixels:
 `Page.captureScreenshot` never answers and `Page.startScreencast` delivers no frames.

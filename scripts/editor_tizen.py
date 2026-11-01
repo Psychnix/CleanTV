@@ -6,7 +6,9 @@ inspector delivers no pixels, so Live is a mirror: a node helper evaluates one f
 expression about once a second and the editor redraws that state. Nothing here installs, launches
 outside that explicit restart, writes TV storage or reads credentials. See docs/editor.md, "Samsung".
 """
+from contextlib import contextmanager
 import copy
+import http.client
 import ipaddress
 import json
 import os
@@ -115,9 +117,11 @@ class TizenTelevision:
         self.store = store
         self._config = tizen_config() if config is None else config
         self.lock = threading.Lock()
-        self.device_lock = threading.Lock()
+        # Re-entrant: restart_debug holds it and calls inspector()/tunnel(), which take it again.
+        self.device_lock = threading.RLock()
         self.cached = None
-        self.forwarded = None
+        # Local ports with a live sdb forward. A forward exists only while a reader runs inside tunnel().
+        self.open_forwards = set()
         self.mirror = TizenMirror(self)
 
     def config(self):
@@ -161,32 +165,91 @@ class TizenTelevision:
     def cache_path(self):
         return self.store.path / 'tizen-inspector.json'
 
-    def forward(self):
-        if self.forwarded is None and self._config and not self._config.get('error'):
+    def remote(self):
+        """The remembered remote debug port on the TV, or None. Only the remote port is cached; a first
+        build also stored a persistent local port, which is removed once and then dropped for good."""
+        with self.device_lock:
+            if not self._config or self._config.get('error'):
+                return None
             try:
                 value = json.loads(self.cache_path().read_text())
             except (OSError, ValueError):
-                value = None
-            if (isinstance(value, dict) and value.get('target') == self._config['target']
-                    and all(isinstance(value.get(k), int) and 0 < value[k] < 65536 for k in ['local', 'remote'])):
-                self.forwarded = value
-        return self.forwarded
+                return None
+            if not (isinstance(value, dict) and value.get('target') == self._config['target']
+                    and isinstance(value.get('remote'), int) and 0 < value['remote'] < 65536):
+                return None
+            if isinstance(value.get('local'), int):
+                try:
+                    self.sdb(['-s', self._config['target'], 'forward', '--remove', 'tcp:%d' % value['local']])
+                except ValueError:
+                    pass
+                self.remember_remote(value['remote'])  # rewrite without the stale local port
+            return value['remote']
+
+    def remember_remote(self, remote):
+        from editor_server import atomic
+        with self.device_lock:
+            atomic(self.cache_path(), dict(target=self.usable()['target'], remote=int(remote)))
+
+    def forget_remote(self):
+        with self.device_lock:
+            try:
+                self.cache_path().unlink()
+            except OSError:
+                pass
+
+    @contextmanager
+    def tunnel(self):
+        """A short-lived sdb forward to the TV's debug port, open only while a reader runs inside it and
+        always removed afterwards. sdb binds it on all network interfaces, not loopback-only."""
+        target = self.usable()['target']
+        remote = self.remote()
+        if remote is None:
+            raise ValueError(DEBUG_OFF)
+        with self.device_lock:
+            local = None
+            for attempt in range(3):
+                candidate = self.free_port()
+                try:
+                    self.sdb(['-s', target, 'forward', 'tcp:%d' % candidate, 'tcp:%d' % remote])
+                    local = candidate
+                    break
+                except ValueError as error:
+                    if 'bind' not in str(error).lower() or attempt == 2:
+                        raise
+            self.open_forwards.add(local)
+        try:
+            yield local
+        finally:
+            with self.device_lock:
+                try:
+                    self.sdb(['-s', target, 'forward', '--remove', 'tcp:%d' % local])
+                except ValueError:
+                    pass
+                self.open_forwards.discard(local)
 
     def listing(self, port):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open('http://127.0.0.1:%d/json' % port, timeout=2) as response:
             return json.loads(response.read(1_000_000))
 
-    def inspector(self):
-        """The cached forward and CleanTV's page on it, or None when debug mode is off. Local HTTP only."""
-        forward = self.forward()
-        if not forward:
+    def inspector(self, forget=False):
+        """CleanTV's page over a short-lived forward, or None when debug mode is off. Local HTTP only.
+        A failed forward keeps the remote (host/transport issue); a dead debug port is forgotten when
+        forget is set, so a later status offers the explicit restart again."""
+        if self.remote() is None:
             return None
         try:
-            targets = self.listing(forward['local'])
-        except (OSError, ValueError):
+            with self.tunnel() as port:
+                try:
+                    targets = self.listing(port)
+                except (OSError, http.client.HTTPException, ValueError):
+                    if forget:
+                        self.forget_remote()
+                    return None
+        except ValueError:
             return None
-        return dict(port=forward['local'], target=choose_target(targets))
+        return dict(target=choose_target(targets))
 
     def status(self):
         with self.lock:
@@ -200,7 +263,7 @@ class TizenTelevision:
                 if not self.attach():
                     raise ValueError(OFFLINE)
                 result.update(connected=True, state='connected', message='TV verbunden · ' + DEBUG_OFF)
-                found = self.inspector()
+                found = self.inspector(forget=True)
                 if found:
                     result.update(debug=True, state='debug', message='TV verbunden · Debug-Modus an · CleanTV-Seite nicht gefunden. Bitte CleanTV am Fernseher öffnen.')
                 if found and found['target']:
@@ -239,7 +302,6 @@ class TizenTelevision:
 
     def restart_debug(self):
         """Explicit owner action: CleanTV restarts on the TV. Settings, add-ons and sign-ins stay."""
-        from editor_server import atomic
         with self.device_lock:
             config = self.usable()
             target = config['target']
@@ -257,24 +319,20 @@ class TizenTelevision:
                     raise
                 time.sleep(2)
                 remote = parse_debug_port(self.sdb(launch, timeout=60))
-            previous = self.forward()
-            if previous:
-                try:
-                    self.sdb(['-s', target, 'forward', '--remove', 'tcp:%d' % previous['local']])
-                except ValueError:
-                    pass
-            local = self.free_port()
-            self.sdb(['-s', target, 'forward', 'tcp:%d' % local, 'tcp:%d' % remote])
-            self.forwarded = dict(target=target, local=local, remote=remote)
-            atomic(self.cache_path(), self.forwarded)
+            self.remember_remote(remote)
+            # Poll /json inside one short-lived forward until CleanTV's page reports in.
             deadline = time.monotonic() + 20
-            while True:
-                found = self.inspector()
-                if found and found['target']:
-                    break
-                if time.monotonic() > deadline:
-                    raise ValueError('CleanTV wurde im Debug-Modus gestartet, aber die Seite meldet sich nicht. Bitte erneut versuchen.')
-                time.sleep(.5)
+            with self.tunnel() as port:
+                while True:
+                    try:
+                        found = choose_target(self.listing(port))
+                    except (OSError, http.client.HTTPException, ValueError):
+                        found = None
+                    if found:
+                        break
+                    if time.monotonic() > deadline:
+                        raise ValueError('CleanTV wurde im Debug-Modus gestartet, aber die Seite meldet sich nicht. Bitte erneut versuchen.')
+                    time.sleep(.5)
         with self.lock:
             self.cached = None
         return self.status()
@@ -286,8 +344,9 @@ class TizenTelevision:
         if not found['target']:
             raise ValueError('CleanTV wurde im TV-Inspektor nicht gefunden. Bitte CleanTV am Fernseher öffnen.')
         try:
-            result = subprocess.run(['node', str(HELPER), str(found['port']), '--once'], capture_output=True, timeout=30,
-                                    cwd=ROOT, stdin=subprocess.DEVNULL)
+            with self.tunnel() as port:
+                result = subprocess.run(['node', str(HELPER), str(port), '--once'], capture_output=True, timeout=30,
+                                        cwd=ROOT, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             raise ValueError('Der TV-Stand konnte nicht rechtzeitig gelesen werden.') from None
         message = 'Der TV-Stand konnte nicht gelesen werden.'
@@ -419,9 +478,12 @@ class TizenMirror:
                     continue
                 self.update(phase='connecting', message='')
                 try:
-                    self.follow(found['port'])
+                    self.follow()
                 except OSError as error:
                     self.update(phase='error', message='Der Lesehelfer (Node.js) konnte nicht starten: ' + str(error)[:160])
+                except ValueError:
+                    # A lost sdb forward (Wi-Fi blip, sdb restart): re-create it next loop, never restart CleanTV.
+                    pass
                 if not self.stop_event.is_set() and not self.idle():
                     self.stop_event.wait(2)
         finally:
@@ -431,7 +493,12 @@ class TizenMirror:
                 self.worker = None
                 self.condition.notify_all()
 
-    def follow(self, port):
+    def follow(self):
+        # The forward lives only for this reader; it is removed the moment the helper stops.
+        with self.tv.tunnel() as port:
+            self.follow_on(port)
+
+    def follow_on(self, port):
         process = subprocess.Popen(['node', str(HELPER), str(port)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL, cwd=ROOT)
         with self.condition:
@@ -497,3 +564,15 @@ class TizenMirror:
         self.pause()
         with self.condition:
             self.condition.notify_all()
+        worker = self.worker
+        if worker and worker is not threading.current_thread():
+            worker.join(timeout=8)
+        # A clean reader removes its own forward; this clears anything a crashed reader left listening.
+        target = (self.tv.config() or {}).get('target')
+        for local in list(self.tv.open_forwards):
+            if target:
+                try:
+                    self.tv.sdb(['-s', target, 'forward', '--remove', 'tcp:%d' % local])
+                except ValueError:
+                    pass
+            self.tv.open_forwards.discard(local)

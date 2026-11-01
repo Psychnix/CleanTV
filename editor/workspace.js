@@ -76,7 +76,8 @@ export function initWorkspace(api){
   if(debugBusy)return;
   const body=document.createElement('div');
   body.append(text('p','Achtung: CleanTV wird auf dem Fernseher beendet und sofort im Debug-Modus neu gestartet. Das Bild am Fernseher ist dabei kurz weg.'),
-   text('p','Einstellungen, Add-ons und die Spotify-Anmeldung bleiben erhalten. Der Debug-Modus endet, wenn CleanTV am Fernseher geschlossen wird.'));
+   text('p','Einstellungen, Add-ons und die Spotify-Anmeldung bleiben erhalten. Der Debug-Modus endet, wenn CleanTV am Fernseher geschlossen wird.'),
+   text('p','Während der Live-Spiegel oder ein Import läuft, öffnet sdb den TV-Inspektor auf diesem Computer kurzzeitig für alle Netzwerkschnittstellen (nicht nur lokal). Der Zugang wird nach jedem Lesen sofort wieder geschlossen.'));
   api.dialog('CleanTV im Debug-Modus neu starten?',body,async()=>{
    debugBusy=true;$('restartDebug').disabled=true;$('mirrorDebug').disabled=true;api.notice('CleanTV wird am Fernseher im Debug-Modus neu gestartet …');
    try{await api.request('tv/debug',{});api.notice('CleanTV läuft am Fernseher wieder, jetzt im Debug-Modus. Bitte das Bild am TV prüfen.');}
