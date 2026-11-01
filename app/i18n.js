@@ -93,6 +93,7 @@
     'Open selected group': 'Gruppe öffnen', 'On Home': 'Auf Home', 'On Home ': 'Auf Home ', ' of ': ' von ',
     'Spotify player': 'Spotify Player', 'Open Spotify app': 'Spotify App öffnen', 'Track progress': 'Titelfortschritt',
     'Spotify player. Select to show controls.': 'Spotify Player. Auswählen, um die Bedienung zu öffnen.',
+    'Continue in Spotify': 'In Spotify fortsetzen',
     'Adjust with Left and Right': 'Mit Links und Rechts ändern', '0% solid · 100% transparent': '0 % deckend · 100 % transparent',
     'Could not sign out. Please try again.': 'Abmelden fehlgeschlagen. Bitte erneut versuchen.',
     'Spotify is busy. Try again later.': 'Spotify ist ausgelastet. Bitte später erneut versuchen.',
