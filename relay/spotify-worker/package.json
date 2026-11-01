@@ -1,0 +1,6 @@
+{
+  "name": "cleantv-spotify-relay",
+  "private": true,
+  "type": "module",
+  "description": "CleanTV Spotify pairing relay (Cloudflare Worker). No dependencies; deploy with a pinned npx wrangler, see README.md."
+}

@@ -22,6 +22,7 @@
     "editor": "python3 scripts/editor_server.py --open",
     "check:editor": "node scripts/check-editor.mjs && node scripts/check-editor-workspace.mjs && node scripts/check-editor-import.mjs",
     "check:addons": "node scripts/check-addons-browser.mjs && node scripts/check-addon-setup.mjs",
+    "check:relay": "node --test relay/spotify-worker/test.mjs",
     "check:editor:addons": "node scripts/check-editor-addons.mjs"
   },
   "devDependencies": {
