@@ -200,8 +200,16 @@
       apply(list);
     });
   }
+  /* The same files for a photo (paths follow from ID and role). */
+  function same(a, b) {
+    return !!(a && b) && a.rev === b.rev && ROLES.every(function (role) { return a.files[role].size === b.files[role].size && a.files[role].sha256 === b.files[role].sha256; });
+  }
   function apply(list) {
-    var st = state(), use = {}, gone = [];
+    var st = state(), use = {}, gone = [], before = {}, after = {};
+    // A failed photo is tried again before its ten minutes are up only when this index changes it.
+    (full || []).forEach(function (e) { before[e.id] = e; });
+    list.forEach(function (e) { after[e.id] = e; });
+    Object.keys(failed).forEach(function (id) { if (!same(before[id], after[id])) delete failed[id]; });
     full = list;
     st.inUse.concat([st.wall]).forEach(function (id) { if (id) use[id] = true; });
     // A photo removed from the index stays while it is shown or chosen, marked gone.
@@ -209,7 +217,6 @@
     gone.forEach(function (e) { e.gone = true; });
     record.entries = list.map(function (e) { return light(e); }).concat(gone);
     record.checked = now(); record.active = true; record.version = addon().version;
-    failed = {};
     update(function () { if (walls) rebuild(record.entries); });
     if (message === STALE) message = '';
     save(); writeMeta(list); changed(); sync();
@@ -359,7 +366,7 @@
       if (error === 'QuotaExceededError') { quota = true; message = FULL; }
       else if (error === 'checksum') message = MISMATCH;
       else if (!error && (message === FULL || message === MISMATCH)) message = '';
-      // A failed photo waits ten minutes before it is tried again, unless a new index arrives. A cancelled
+      // A failed photo waits ten minutes before it is tried again, unless a new index changes it. A cancelled
       // one does not: the next photo, or retire(), goes on at once, and choosing it again starts it again.
       if (error && !cancelled) failed[need] = now();
       changed(); idle();

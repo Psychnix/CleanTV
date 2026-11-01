@@ -332,6 +332,34 @@ test('a large photo is hashed in 128 KiB steps, one per task', () => {
   }
 });
 
+test('an unchanged index keeps the ten-minute wait; an index that changes the photo ends it', () => {
+  const h = harness(), a = photo('aw-a'), b = photo('aw-b'), panel = BASE + a.entry.files.panel.path;
+  h.bind(); h.install([a, b]);
+  h.routes.set(panel, { body: buffer(Buffer.from(a.bytes.panel).fill(65, 0, 1)) });
+  h.set({ wall: 'aw-a', shown: 'aw-a' });
+  assert.equal(h.walls.stored('aw-a'), false);
+  const files = () => h.requests().filter(u => u.includes('/generated/')).length, indexes = () => h.requests().filter(u => u === INDEX).length;
+  const count = files(), checked = indexes();
+  for (let i = 1; i <= 2; i++) {
+    h.clock.now += 60001; h.walls.picker(); h.flush();
+    assert.equal(indexes(), checked + i, 'picker ' + i + ' fetches the index');
+    assert.equal(files(), count, 'picker ' + i + ': the same index does not end the wait');
+  }
+  // Another photo changing leaves this wait alone.
+  const b2 = photo('aw-b', { seed: '2' });
+  h.serve([a, b2]); h.routes.set(panel, { body: buffer(Buffer.from(a.bytes.panel).fill(65, 0, 1)) });
+  h.clock.now += 60001; h.walls.picker(); h.flush();
+  assert.equal(files(), count, 'only aw-b changed');
+  // A new panel for this photo, same revision: tried again at once and stored.
+  const fixed = Buffer.from('aw-a/panel/fixed/' + 'y'.repeat(60));
+  const entry = { ...a.entry, files: { ...a.entry.files, panel: { ...a.entry.files.panel, size: fixed.length, sha256: hex(fixed) } } };
+  h.routes.set(INDEX, { body: buffer(JSON.stringify({ api: 1, entries: [entry, b2.entry] })) });
+  h.routes.set(panel, { body: buffer(fixed) });
+  h.clock.now += 60001; h.walls.picker(); h.flush();
+  assert.equal(h.walls.stored('aw-a'), true, 'the changed photo is downloaded again');
+  assert.equal(h.walls.message(), '');
+});
+
 test('rotation keeps at most ten add-on favourites; turning it off deletes them but keeps the stars', () => {
   const h = harness(), photos = Array.from({ length: 12 }, (_, i) => photo('aw-p' + i));
   const ids = photos.map(p => p.entry.id);
