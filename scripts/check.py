@@ -18,13 +18,17 @@ assert manifest.get('version') == json.loads((root / 'package.json').read_text()
 privileges = sorted(node.get('name') for node in manifest.findall('t:privilege', ns))
 assert privileges == sorted('http://tizen.org/privilege/' + name for name in ['application.launch', 'application.info', 'tv.inputdevice', 'internet']), 'Unexpected Tizen privileges: ' + ', '.join(privileges)
 ORIGINS = ['https://raw.githubusercontent.com', 'https://api.open-meteo.com', 'https://geocoding-api.open-meteo.com', 'https://openplzapi.org',
-           'https://accounts.spotify.com', 'https://api.spotify.com', 'https://i.scdn.co']
+           'https://accounts.spotify.com', 'https://api.spotify.com', 'https://i.scdn.co', 'https://cleantv-spotify.tobiaspsi96.workers.dev']
 access = [(node.get('origin'), node.get('subdomains')) for node in manifest.findall('w:access', ns)]
 assert access == [(origin, 'false') for origin in ORIGINS], 'Network access must stay limited to the reviewed origins: ' + repr(access)
 # Host modules may name only those origins; anything else would fail on the TV or widen the review.
 for script in sorted(list(app.glob('tizen-*.js')) + list(app.glob('cleantv-*.js'))):
     for literal in re.findall(r'''["'](https://[^"'\s]*)''', script.read_text(encoding='utf-8')):
         assert any(literal == origin or literal.startswith(origin + '/') for origin in ORIGINS), 'Unreviewed origin in ' + script.name + ': ' + literal
+# PKCE needs no client secret; none may ever be bundled with the TV app or the relay.
+for script in sorted(list(app.rglob('*.js')) + list((root / 'relay').rglob('*.js')) + list((root / 'relay').rglob('*.toml'))):
+    assert 'client_secret' not in script.read_text(encoding='utf-8').lower(), 'No client secret belongs in ' + script.relative_to(root).as_posix()
+assert re.search(r"var CLIENT_ID = '[0-9a-f]{32}'", (app / 'tizen-spotify.js').read_text(encoding='utf-8')), 'The Spotify client ID is 32 hex characters'
 assert not [node for node in manifest.iter() if node.tag.split('}')[-1] in ('content-security-policy', 'content-security-policy-report-only', 'allow-navigation')], 'Keep the Tizen runtime in WARP mode'
 for tag in ['content', 'icon']:
     node = manifest.find('w:' + tag, ns)
