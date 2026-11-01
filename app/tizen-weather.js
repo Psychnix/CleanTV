@@ -379,20 +379,46 @@
     var detail = geoDetail(r);
     return { name: display(r.name), detail: detail, place: { name: display(r.name), region: display(r.admin1), detail: detail, country: r.country_code, lat: r.latitude, lon: r.longitude, timezone: r.timezone } };
   }
-  function field(o, key) { return o && typeof o === 'object' && typeof o[key] === 'string' ? display(o[key]) : ''; }
+  function field(o, prop) { return o && typeof o === 'object' && typeof o[prop] === 'string' ? display(o[prop]) : ''; }
+  /* Swiss cantons by abbreviation, as GeoNames names them in German (without "Kanton"); OpenPLZ uses
+     the official names ("Genève", "Vaud", "Bern / Berne"). */
+  var CANTONS = { AG: 'Aargau', AI: 'Appenzell Innerrhoden', AR: 'Appenzell Ausserrhoden', BE: 'Bern', BL: 'Basel-Landschaft', BS: 'Basel-Stadt',
+    FR: 'Freiburg', GE: 'Genf', GL: 'Glarus', GR: 'Graubünden', JU: 'Jura', LU: 'Luzern', NE: 'Neuenburg', NW: 'Nidwalden', OW: 'Obwalden',
+    SG: 'St. Gallen', SH: 'Schaffhausen', SO: 'Solothurn', SZ: 'Schwyz', TG: 'Thurgau', TI: 'Tessin', UR: 'Uri', VD: 'Waadt', VS: 'Wallis', ZG: 'Zug', ZH: 'Zürich' };
+  /* OpenPLZ abbreviates official names ("St. Ingbert", "Mühldorf a. Inn", "Weiden i.d.OPf."); GeoNames
+     mostly spells them out ("Sankt Ingbert"). */
+  function expand(name) {
+    return display(String(name || '').replace(/(^|[\s(])St\.\s*/g, '$1Sankt ').replace(/(^|\s)a\.\s*d\.\s*/g, '$1an der ')
+      .replace(/(^|\s)i\.\s*d\.\s*/g, '$1in der ').replace(/(^|\s)v\.\s*d\.\s*/g, '$1vor der ')
+      .replace(/(^|\s)a\.\s*/g, '$1am ').replace(/(^|\s)i\.\s*/g, '$1im '));
+  }
+  /* Comparable names: the part before a comma, abbreviations spelled out, administrative words, spaces and
+     punctuation dropped, so "Mühldorf a.Inn, St" and "Landkreis Mühldorf am Inn" agree. */
+  function comparable(name) {
+    return admin(expand(String(name || '').split(',')[0])).replace(/^(verwaltungskreis|wahlkreis|district de la|district de|district du|canton de|canton du)\s+/, '')
+      .replace(/[^0-9a-z\u00df-\u00f6\u00f8-\u024f]+/g, '');
+  }
+  // Every language part of a state ("Bern / Berne"), plus the German name of a Swiss canton.
+  function regions(lookup) {
+    var list = String(lookup.region || '').split('/').map(comparable).filter(Boolean);
+    if (CANTONS[lookup.canton]) list.push(comparable(CANTONS[lookup.canton]));
+    return list;
+  }
   function plzItem(cc, row, code, lang) {
     if (!row || typeof row !== 'object' || !text(row.name, 120)) return null;
     var name = display(row.name), country = cc.toUpperCase();
     var region = cc === 'de' ? field(row.federalState, 'name') : cc === 'at' ? field(row.federalProvince, 'name') : cc === 'ch' ? field(row.canton, 'name') : '';
     var district = field(row.district, 'name'), municipality = cc === 'ch' || cc === 'li' ? field(row.commune, 'name') : field(row.municipality, 'name');
-    var parts = [], brief = admin(district), detail;
+    var parts = [], brief = comparable(district), detail;
     // Districts tell villages apart in Germany and Switzerland; Austrian postal areas span several.
-    if (cc !== 'at' && brief && brief !== norm(name) && brief !== admin(region)) parts.push(shortAdmin(district));
+    if (cc !== 'at' && brief && brief !== comparable(name) && brief !== comparable(region)) parts.push(shortAdmin(district));
     if (region) parts.push(region);
     if (country !== 'DE') parts.push(tr(lang, { AT: 'Austria', CH: 'Switzerland', LI: 'Liechtenstein' }[country]));
     detail = code + ' · ' + parts.join(', ');
-    return { name: name, detail: detail, lookup: { country: country, name: name, region: region, district: district, municipality: municipality, detail: detail } };
+    return { name: name, detail: detail, lookup: { country: country, code: code, name: name, region: region, canton: cc === 'ch' ? field(row.canton, 'shortName').toUpperCase() : '',
+      district: district, municipality: municipality, detail: detail } };
   }
+  function own(item) { return comparable(item.lookup.municipality) === comparable(item.name); }
   function postal(countries, code, lang, done) {
     var pending = countries.length, found = {}, failed = '';
     var handles = countries.map(function (cc) {
@@ -402,8 +428,11 @@
         var items = [], seen = {};
         countries.forEach(function (cc) {
           (found[cc] || []).forEach(function (row) {
-            var item = plzItem(cc, row, code, lang), key = item && item.lookup.country + '|' + norm(item.name) + '|' + norm(item.lookup.region);
-            if (item && !seen[key]) { seen[key] = true; items.push(item); }
+            var item = plzItem(cc, row, code, lang), id = item && item.lookup.country + '|' + norm(item.name) + '|' + norm(item.lookup.region);
+            if (!item) return;
+            // One entry per place; it keeps the row whose municipality has the place's name (Sion, not Savièse).
+            if (!seen[id]) seen[id] = items.push(item);
+            else if (own(item) && !own(items[seen[id] - 1])) items[seen[id] - 1] = item;
           });
         });
         if (!items.length && failed) done(failure(lang, failed, true));
@@ -431,28 +460,41 @@
     }
     return function () { handles.forEach(function (h) { h.abort(); }); };
   }
-  /* A postal-code entry has no coordinates: the same name in the same country, state and, where
-     known, district or municipality. Names with a comma ("Wien, Innere Stadt") use the first part. */
-  function match(list, query, lookup) {
-    var want = norm(query), region = admin(lookup.region), areas = [admin(lookup.district), admin(lookup.municipality)].filter(Boolean), best = null, score = -1;
+  /* A postal-code entry has no coordinates. A GeoNames place in the same country counts when it lists
+     the postal code ("Genf" for 1201 Genève), or when it lies in the same state and has the same name
+     or, as a town, the same district or municipality ("Mühldorf" in "Mühldorf a. Inn"); names compare
+     through comparable(). Weight, in this order: same name, the code, the district, a town, then
+     population. A lookup by the postal code itself takes only a place that lists it. */
+  function match(list, step, lookup) {
+    var want = comparable(step.query), wanted = regions(lookup), areas = [comparable(lookup.district), comparable(lookup.municipality)].filter(Boolean), best = null, score = -1;
     list.forEach(function (r) {
-      var s;
-      if (norm(r.name) !== want || region && admin(r.admin1) !== region) return;
-      s = ([r.admin2, r.admin3, r.admin4].some(function (a) { return a && areas.indexOf(admin(a)) >= 0; }) ? 2 : 0) + (group(r) === 0 ? 1 : 0);
+      var town = group(r) === 0, named = !step.code && comparable(r.name) === want, s,
+        coded = !!lookup.code && Array.isArray(r.postcodes) && r.postcodes.indexOf(lookup.code) >= 0,
+        area = [r.admin2, r.admin3, r.admin4].some(function (a) { return !!a && areas.indexOf(comparable(a)) >= 0; });
+      if (r.country_code && r.country_code !== lookup.country || step.code && !coded) return;
+      if (!coded && (wanted.length && wanted.indexOf(comparable(r.admin1)) < 0 || !named && !(area && town))) return;
+      s = (named ? 8 : 0) + (coded ? 4 : 0) + (area ? 2 : 0) + (town ? 1 : 0);
       if (s > score || s === score && (r.population || 0) > (best.population || 0)) { best = r; score = s; }
     });
     return best;
   }
+  /* Lookups in turn until one matches: the name, then the municipality, each as written and spelled
+     out (names with a comma, "Wien, Innere Stadt", by their first part), then the postal code. */
   function locate(lookup, lang, done) {
-    var names = [], handle = null, cancelled = false;
+    var steps = [], tried = {}, handle = null, cancelled = false;
+    function add(query, code) {
+      var id = norm(query).replace(/[\s.]+/g, '');
+      if (query && !tried[id]) { tried[id] = true; steps.push({ query: query, code: code }); }
+    }
     [lookup.name, lookup.municipality].forEach(function (name) {
       var first = display(String(name || '').split(',')[0]);
-      if (first && names.indexOf(first) < 0) names.push(first);
+      add(first, false); add(expand(first), false);
     });
+    if (lookup.code) add(lookup.code, true);
     (function next(i) {
-      if (i >= names.length) { done(tr(lang, 'No coordinates were found for this place.')); return; }
-      handle = get(GEOCODING + '?name=' + encodeURIComponent(names[i]) + '&count=100&language=de&format=json&countryCode=' + lookup.country, SEARCH_LIMIT, function (error, data) {
-        var list = error ? null : places(data), best = list && match(list, names[i], lookup);
+      if (i >= steps.length) { done(tr(lang, 'No coordinates were found for this place.')); return; }
+      handle = get(GEOCODING + '?name=' + encodeURIComponent(steps[i].query) + '&count=100&language=de&format=json&countryCode=' + lookup.country, SEARCH_LIMIT, function (error, data) {
+        var list = error ? null : places(data), best = list && match(list, steps[i], lookup);
         handle = null;
         if (cancelled) return;
         if (!list) { done(failure(lang, error || 'data', true)); return; }

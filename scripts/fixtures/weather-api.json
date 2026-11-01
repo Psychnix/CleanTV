@@ -317,6 +317,50 @@
       {"id":2911089,"name":"Hammerschmiede","latitude":47.925,"longitude":10.59602,"feature_code":"PPL","country_code":"DE","timezone":"Europe/Berlin","country":"Deutschland","admin1":"Bayern","admin2":"Regierungsbezirk Schwaben","admin3":"Landkreis Ostallgäu","admin4":"Pforzen"},
       {"id":2911090,"name":"Hammerschmiede","latitude":47.6329,"longitude":10.49887,"feature_code":"PPL","country_code":"DE","timezone":"Europe/Berlin","country":"Deutschland","admin1":"Bayern","admin2":"Regierungsbezirk Schwaben","admin3":"Landkreis Ostallgäu","admin4":"Nesselwang, Markt"},
       {"id":2911116,"name":"Hammerkröblitz","latitude":49.36667,"longitude":12.4,"feature_code":"PPL","country_code":"DE","timezone":"Europe/Berlin","country":"Deutschland","admin1":"Bayern","admin2":"Regierungsbezirk Oberpfalz","admin3":"Landkreis Schwandorf","admin4":"Neunburg vorm Wald"}
+    ]},
+    "Bern|CH": {"results": [
+      {"id":2661552,"name":"Bern","latitude":46.94809,"longitude":7.44744,"feature_code":"PPLC","country_code":"CH","timezone":"Europe/Zurich","population":121631,"postcodes":["3000","3004","3005","3006","3007","3008","3010","3011","3012","3013","3014","3015","3018","3019","3020","3027"],"country":"Schweiz","admin1":"Kanton Bern","admin2":"Bern-Mittelland","admin3":"Bern"},
+      {"id":2661547,"name":"Bernex GE","latitude":46.1765,"longitude":6.07544,"feature_code":"PPL","country_code":"CH","timezone":"Europe/Zurich","population":9759,"postcodes":["1233"],"country":"Schweiz","admin1":"Kanton Genf","admin2":"Kanton Genf","admin3":"Bernex"},
+      {"id":2661549,"name":"Berner Alpen","latitude":46.41667,"longitude":7.75,"feature_code":"MTS","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Wallis"},
+      {"id":2661550,"name":"Berneck","latitude":47.42555,"longitude":9.61619,"feature_code":"PPL","country_code":"CH","timezone":"Europe/Zurich","postcodes":["9442"],"country":"Schweiz","admin1":"Kanton St. Gallen","admin2":"Rheintal","admin3":"Berneck SG"},
+      {"id":2661546,"name":"Bernina","latitude":46.36667,"longitude":9.83333,"feature_code":"MTS","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Graubünden"},
+      {"id":6933641,"name":"Berneuse","latitude":46.35985,"longitude":7.0018,"feature_code":"PK","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Waadt","admin2":"Bezirk Aigle","admin3":"Leysin"},
+      {"id":7669457,"name":"Bernhardzell","latitude":47.47467,"longitude":9.33628,"feature_code":"PPL","country_code":"CH","timezone":"Europe/Zurich","postcodes":["9304"],"country":"Schweiz","admin1":"Kanton St. Gallen","admin2":"Wahlkreis St. Gallen","admin3":"Waldkirch"},
+      {"id":2660206,"name":"Jura Bernois","latitude":47.25,"longitude":7.25,"feature_code":"MTS","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Bern"},
+      {"id":2661544,"name":"Berninahäuser","latitude":46.44474,"longitude":9.96966,"feature_code":"PPL","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Graubünden","admin2":"Region Maloja","admin3":"Pontresina"},
+      {"id":8504936,"name":"Bernina Hospiz","latitude":46.41153,"longitude":10.02193,"feature_code":"PPL","country_code":"CH","timezone":"Europe/Zurich","postcodes":["7710"],"country":"Schweiz","admin1":"Kanton Graubünden","admin2":"Region Bernina","admin3":"Poschiavo"},
+      {"id":6299720,"name":"Flughafen Bern-Belp","latitude":46.9141,"longitude":7.49715,"feature_code":"AIRP","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Bern","admin2":"Bern-Mittelland","admin3":"Belp"},
+      {"id":2659272,"name":"Bern-Ostermundigen","latitude":46.95694,"longitude":7.49019,"feature_code":"PPLA3","country_code":"CH","timezone":"Europe/Zurich","postcodes":["3072"],"country":"Schweiz","admin1":"Kanton Bern","admin2":"Bern-Mittelland","admin3":"Ostermundigen"},
+      {"id":2658839,"name":"San-Bernardino-Pass","latitude":46.49714,"longitude":9.17114,"feature_code":"PASS","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Graubünden","admin2":"Region Moesa","admin3":"Mesocco"},
+      {"id":8181648,"name":"Bern / Wankdorf","latitude":46.96614,"longitude":7.46813,"feature_code":"PPLX","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Bern","admin2":"Bern-Mittelland","admin3":"Bern"},
+      {"id":2660903,"name":"Bern / Engehalde","latitude":46.9601,"longitude":7.43843,"feature_code":"PPLX","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Bern","admin2":"Bern-Mittelland","admin3":"Bern"},
+      {"id":8181662,"name":"Bern / Innere Stadt","latitude":46.94768,"longitude":7.45251,"feature_code":"PPLX","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Bern","admin2":"Bern-Mittelland","admin3":"Bern"},
+      {"id":2658008,"name":"Bern / Weyermannshaus","latitude":46.9478,"longitude":7.40324,"feature_code":"PPLX","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Bern","admin2":"Bern-Mittelland","admin3":"Bern"}
+    ]},
+    "Genève|CH": {"results": [
+      {"id":2660646,"name":"Genf","latitude":46.20222,"longitude":6.14569,"feature_code":"PPLA","country_code":"CH","timezone":"Europe/Zurich","population":201741,"postcodes":["1200","1201","1203","1204","1205","1206","1207","1208","1209","1211"],"country":"Schweiz","admin1":"Kanton Genf","admin2":"Kanton Genf","admin3":"Genf"}
+    ]},
+    "Sion|CH": {"results": [
+      {"id":6299717,"name":"Flughafen Sitten","latitude":46.21959,"longitude":7.32676,"feature_code":"AIRP","country_code":"CH","timezone":"Europe/Zurich","country":"Schweiz","admin1":"Kanton Wallis","admin2":"Bezirk Sion","admin3":"Sion"}
+    ]},
+    "1950|CH": {"results": [
+      {"id":2658576,"name":"Sitten","latitude":46.22739,"longitude":7.35559,"feature_code":"PPLA","country_code":"CH","timezone":"Europe/Zurich","population":34708,"postcodes":["1950"],"country":"Schweiz","admin1":"Kanton Wallis","admin2":"Bezirk Sion","admin3":"Sion"}
+    ]},
+    "St. Ingbert|DE": {"generationtime_ms":0.106453896},
+    "Sankt Ingbert|DE": {"results": [
+      {"id":2841590,"name":"Sankt Ingbert","latitude":49.27697,"longitude":7.11672,"feature_code":"PPL","country_code":"DE","timezone":"Europe/Berlin","population":38697,"country":"Deutschland","admin1":"Saarland","admin3":"Saarpfalz-Kreis","admin4":"St. Ingbert"}
+    ]},
+    "Mühldorf a. Inn|DE": {"generationtime_ms":0.20802021},
+    "Mühldorf am Inn|DE": {"results": [
+      {"id":2868506,"name":"Mühldorf","latitude":48.2467,"longitude":12.52155,"feature_code":"PPLA3","country_code":"DE","timezone":"Europe/Berlin","population":17622,"country":"Deutschland","admin1":"Bayern","admin2":"Regierungsbezirk Oberbayern","admin3":"Landkreis Mühldorf am Inn","admin4":"Mühldorf a. Inn"}
+    ]},
+    "Mühldorf|DE": {"results": [
+      {"id":2868506,"name":"Mühldorf","latitude":48.2467,"longitude":12.52155,"feature_code":"PPLA3","country_code":"DE","timezone":"Europe/Berlin","population":17622,"country":"Deutschland","admin1":"Bayern","admin2":"Regierungsbezirk Oberbayern","admin3":"Landkreis Mühldorf am Inn","admin4":"Mühldorf a. Inn"},
+      {"id":2868504,"name":"Mühldorf","latitude":50.39906,"longitude":9.50128,"feature_code":"PPL","country_code":"DE","timezone":"Europe/Berlin","country":"Deutschland","admin1":"Hessen","admin2":"Darmstadt","admin3":"Main-Kinzig-Kreis","admin4":"Schlüchtern"},
+      {"id":2868505,"name":"Mühldorf","latitude":50.28999,"longitude":11.77825,"feature_code":"PPL","country_code":"DE","timezone":"Europe/Berlin","country":"Deutschland","admin1":"Bayern","admin2":"Oberfranken","admin3":"Landkreis Hof","admin4":"Schauenstein"},
+      {"id":2868507,"name":"Mühldorf","latitude":47.9434,"longitude":12.25997,"feature_code":"PPL","country_code":"DE","timezone":"Europe/Berlin","country":"Deutschland","admin1":"Bayern","admin2":"Regierungsbezirk Oberbayern","admin3":"Landkreis Rosenheim","admin4":"Halfing"},
+      {"id":3206769,"name":"Mühldorf","latitude":48.26667,"longitude":12.5,"feature_code":"AIRF","country_code":"DE","timezone":"Europe/Berlin","country":"Deutschland","admin1":"Bayern","admin2":"Regierungsbezirk Oberbayern","admin3":"Landkreis Mühldorf am Inn","admin4":"Mettenheim"},
+      {"id":2868502,"name":"Mühldörfl","latitude":47.52937,"longitude":11.11795,"feature_code":"PPL","country_code":"DE","timezone":"Europe/Berlin","country":"Deutschland","admin1":"Bayern","admin2":"Regierungsbezirk Oberbayern","admin3":"Landkreis Garmisch-Partenkirchen","admin4":"Farchant"}
     ]}
   },
   "openplz": {
@@ -379,6 +423,23 @@
       {"key":"17223","postalCode":"1010","name":"Wien, Innere Stadt","municipality":{"key":"90001","code":"90401","name":"Wien","status":"Statutarstadt"},"district":{"key":"900","code":"904","name":"Wien  4., Wieden"},"federalProvince":{"key":"9","name":"Wien"}},
       {"key":"17223","postalCode":"1010","name":"Wien, Innere Stadt","municipality":{"key":"90001","code":"90701","name":"Wien","status":"Statutarstadt"},"district":{"key":"900","code":"907","name":"Wien  7., Neubau"},"federalProvince":{"key":"9","name":"Wien"}},
       {"key":"17223","postalCode":"1010","name":"Wien, Innere Stadt","municipality":{"key":"90001","code":"90901","name":"Wien","status":"Statutarstadt"},"district":{"key":"900","code":"909","name":"Wien  9., Alsergrund"},"federalProvince":{"key":"9","name":"Wien"}}
+    ],
+    "ch/3011": [
+      {"postalCode":"3011","name":"Bern","commune":{"key":"351","name":"Bern","shortName":"Bern"},"district":{"key":"246","name":"Verwaltungskreis Bern-Mittelland","shortName":"Bern-Mittelland"},"canton":{"key":"2","name":"Bern / Berne","shortName":"BE"}}
+    ],
+    "ch/1201": [
+      {"postalCode":"1201","name":"Genève","commune":{"key":"6621","name":"Genève","shortName":"Genève"},"district":{"key":"2500","name":"Canton de Genève","shortName":"Cant. de Genève"},"canton":{"key":"25","name":"Genève","shortName":"GE"}}
+    ],
+    "ch/1950": [
+      {"postalCode":"1950","name":"Sion","commune":{"key":"6265","name":"Savièse","shortName":"Savièse"},"district":{"key":"2312","name":"District de Sion","shortName":"Sion"},"canton":{"key":"23","name":"Valais / Wallis","shortName":"VS"}},
+      {"postalCode":"1950","name":"Sion","commune":{"key":"6266","name":"Sion","shortName":"Sion"},"district":{"key":"2312","name":"District de Sion","shortName":"Sion"},"canton":{"key":"23","name":"Valais / Wallis","shortName":"VS"}},
+      {"postalCode":"1950","name":"Sion","commune":{"key":"6263","name":"Grimisuat","shortName":"Grimisuat"},"district":{"key":"2312","name":"District de Sion","shortName":"Sion"},"canton":{"key":"23","name":"Valais / Wallis","shortName":"VS"}}
+    ],
+    "de/66386": [
+      {"postalCode":"66386","name":"St. Ingbert","municipality":{"key":"10045117","name":"St. Ingbert, Stadt","type":"Stadt"},"district":{"key":"10045","name":"Saarpfalz-Kreis","type":"Landkreis"},"federalState":{"key":"10","name":"Saarland"}}
+    ],
+    "de/84453": [
+      {"postalCode":"84453","name":"Mühldorf a. Inn","municipality":{"key":"09183128","name":"Mühldorf a.Inn, St","type":"Stadt"},"district":{"key":"09183","name":"Mühldorf a.Inn","type":"Landkreis"},"federalState":{"key":"09","name":"Bayern"}}
     ]
   },
   "forecast": {"latitude":50.728,"longitude":7.105,"generationtime_ms":0.13303756713867188,"utc_offset_seconds":3600,"timezone":"Europe/Berlin","timezone_abbreviation":"GMT+1","elevation":65,"current_units":{"time":"iso8601","interval":"seconds","temperature_2m":"°C","weather_code":"wmo code","wind_speed_10m":"km/h","wind_gusts_10m":"km/h","precipitation":"mm","cloud_cover":"%","is_day":""},"current":{"time":"2026-11-01T02:15","interval":900,"temperature_2m":8.1,"weather_code":3,"wind_speed_10m":5,"wind_gusts_10m":9.4,"precipitation":0,"cloud_cover":100,"is_day":0},"daily_units":{"time":"iso8601","temperature_2m_max":"°C","temperature_2m_min":"°C"},"daily":{"time":["2026-11-01","2026-11-02"],"temperature_2m_max":[10.2,8.7],"temperature_2m_min":[8,7.5]}}

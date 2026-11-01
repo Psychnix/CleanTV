@@ -304,6 +304,101 @@ test('postal codes: every place for a German code, Austrian, Swiss and Liechtens
   assert.deepEqual(k5.lines(), ['Vaduz | 9490 · Liechtenstein']);
 });
 
+test('postal codes whose places OpenPLZ and GeoNames name differently resolve as well (recorded answers)', () => {
+  const h = harness();
+  /* Type the code, pick the only entry, answer every coordinate lookup; returns the names asked for. */
+  const choose = (code, line, answer = x => h.serve(x)) => {
+    const kb = h.keyboard();
+    kb.type(code); h.pending().forEach(x => h.serve(x));
+    assert.deepEqual(kb.lines(), [line]);
+    kb.pick(0);
+    const asked = [];
+    for (let x = h.pending()[0]; x && x.url.startsWith(GEO); x = h.pending()[0]) {
+      assert.match(x.url, new RegExp('&countryCode=' + (code.length === 5 ? 'DE' : 'CH') + '$'));
+      asked.push(new URL(x.url).searchParams.get('name')); answer(x);
+    }
+    assert.equal(kb.t.kb.message, '', code);
+    assert.equal(h.last().url.startsWith(FORECAST), true, 'the chosen place loads at once');
+    h.serve();
+    return asked;
+  };
+  const at = () => { const p = h.state().place; return [p.name, p.region, p.lat, p.lon, p.timezone]; };
+  // Canton "Bern / Berne" against GeoNames "Kanton Bern".
+  assert.deepEqual(choose('3011', 'Bern | 3011 · Verwaltungskreis Bern-Mittelland, Bern / Berne, Schweiz'), ['Bern']);
+  assert.deepEqual(at(), ['Bern', 'Bern / Berne', 46.94809, 7.44744, 'Europe/Zurich']);
+  // GeoNames answers "Genf" in "Kanton Genf"; the place lists the postal code, and canton GE is Genf.
+  assert.deepEqual(choose('1201', 'Genève | 1201 · Genève, Schweiz'), ['Genève']);
+  assert.deepEqual(at(), ['Genève', 'Genève', 46.20222, 6.14569, 'Europe/Zurich']);
+  // "Sion" finds only the airport (not a town): the row whose commune is Sion, then the postal code.
+  assert.deepEqual(choose('1950', 'Sion | 1950 · Valais / Wallis, Schweiz'), ['Sion', '1950']);
+  assert.deepEqual(at(), ['Sion', 'Valais / Wallis', 46.22739, 7.35559, 'Europe/Zurich']);
+  // OpenPLZ abbreviates, GeoNames spells out.
+  assert.deepEqual(choose('66386', 'St. Ingbert | 66386 · Saarpfalz-Kreis, Saarland'), ['St. Ingbert', 'Sankt Ingbert']);
+  assert.deepEqual(at(), ['St. Ingbert', 'Saarland', 49.27697, 7.11672, 'Europe/Berlin']);
+  // "Mühldorf am Inn" answers "Mühldorf", a town whose municipality is "Mühldorf a. Inn".
+  assert.deepEqual(choose('84453', 'Mühldorf a. Inn | 84453 · Bayern'), ['Mühldorf a. Inn', 'Mühldorf am Inn']);
+  assert.deepEqual(at(), ['Mühldorf a. Inn', 'Bayern', 48.2467, 12.52155, 'Europe/Berlin']);
+  // Among the recorded answers for "Mühldorf": the town in that district, not the airfield there, the
+  // villages elsewhere in Bavaria or the one in Hesse.
+  assert.deepEqual(choose('84453', 'Mühldorf a. Inn | 84453 · Bayern', x => x.respond({ json: new URL(x.url).searchParams.get('name') === 'Mühldorf am Inn' ? FX.geocoding['Mühldorf|DE'] : { generationtime_ms: 0.1 } })),
+    ['Mühldorf a. Inn', 'Mühldorf am Inn']);
+  assert.deepEqual(at().slice(2, 4), [48.2467, 12.52155]);
+  // Without that town nothing fits: the same name in another state, the airfield in the district (not a
+  // town), villages in other districts.
+  const others = FX.geocoding['Mühldorf|DE'].results.filter(r => r.feature_code !== 'PPLA3').map(r => r.admin1 === 'Hessen' ? Object.assign({}, r, { name: 'Mühldorf am Inn' }) : r);
+  const kb = h.keyboard();
+  kb.type('84453'); h.serve();
+  kb.pick(0);
+  const asked = [];
+  for (let x = h.pending()[0]; x; x = h.pending()[0]) { asked.push(new URL(x.url).searchParams.get('name')); x.respond({ json: { results: others } }); }
+  assert.deepEqual(asked, ['Mühldorf a. Inn', 'Mühldorf am Inn', '84453']);
+  assert.equal(kb.t.kb.message, 'Für diesen Ort wurden keine Koordinaten gefunden.');
+  // The postal-code lookup takes only a place that lists the code, not just any town in the district.
+  const town = FX.geocoding['Mühldorf|DE'].results.filter(r => r.feature_code === 'PPLA3');
+  kb.clear(); kb.type('84453'); h.serve();
+  kb.pick(0);
+  for (let x = h.pending()[0]; x; x = h.pending()[0]) x.respond({ json: new URL(x.url).searchParams.get('name') === '84453' ? { results: town } : { generationtime_ms: 0.1 } });
+  assert.equal(kb.t.kb.message, 'Für diesen Ort wurden keine Koordinaten gefunden.');
+});
+
+test('the same name outweighs a listed postal code, and other countries never count (synthetic answers)', () => {
+  const h = harness();
+  // 54636 Hamm: a neighbouring village in the same district that lists the code does not replace Hamm.
+  const k1 = h.keyboard();
+  k1.type('54636'); h.serve();
+  k1.pick(k1.names().indexOf('Hamm'));
+  const near = { id: 1, name: 'Hammerhof', latitude: 50.1, longitude: 6.5, feature_code: 'PPL', country_code: 'DE', timezone: 'Europe/Berlin', population: 900, postcodes: ['54636'],
+    country: 'Deutschland', admin1: 'Rheinland-Pfalz', admin3: 'Eifelkreis Bitburg-Prüm', admin4: 'Hammerhof' };
+  h.last().respond({ json: { results: [near].concat(FX.geocoding['Hamm|DE'].results.slice(0, 99)) } });
+  assert.deepEqual([h.state().place.lat, h.state().place.lon], [50.01667, 6.41667]);
+  h.serve();
+  // 9490 Vaduz has no state to compare: a larger Vaduz outside Liechtenstein is still refused.
+  const k2 = h.keyboard();
+  k2.type('9490'); h.pending().forEach(x => h.serve(x));
+  k2.pick(0);
+  const vaduz = (country, lat, population) => ({ id: lat, name: 'Vaduz', latitude: lat, longitude: 9.52, feature_code: 'PPLC', country_code: country, timezone: 'Europe/Vaduz', population, admin1: 'Vaduz' });
+  assert.equal(h.last().url, GEO + '?name=Vaduz&count=100&language=de&format=json&countryCode=LI');
+  h.last().respond({ json: { results: [vaduz('AT', 47.5, 90000), vaduz('LI', 47.14151, 5197)] } });
+  assert.deepEqual([h.state().place.name, h.state().place.lat], ['Vaduz', 47.14151]);
+});
+
+test('a Swiss canton matches any of its language parts or its abbreviation, also for places without postal codes', () => {
+  // The recorded 3011 answers, with the postal codes removed from GeoNames and the canton varied.
+  const bern = { results: FX.geocoding['Bern|CH'].results.map(r => { const c = Object.assign({}, r); delete c.postcodes; return c; }) };
+  const row = FX.openplz['ch/3011'][0];
+  const pick = canton => {
+    const h = harness(), kb = h.keyboard();
+    kb.type('3011');
+    h.pending().forEach(x => x.respond({ json: x.url.startsWith(PLZ + 'ch/') ? [Object.assign({}, row, { canton })] : [] }));
+    kb.pick(0);
+    for (let x = h.pending()[0]; x && x.url.startsWith(GEO); x = h.pending()[0]) x.respond({ json: bern });
+    const p = h.state().place;
+    return p ? [p.lat, p.lon] : kb.t.kb.message;
+  };
+  for (const canton of [row.canton, { name: 'Bern / Berne' }, { name: 'Berne', shortName: 'BE' }]) assert.deepEqual(pick(canton), [46.94809, 7.44744], JSON.stringify(canton));
+  assert.equal(pick({ name: 'Vaud', shortName: 'VD' }), 'Für diesen Ort wurden keine Koordinaten gefunden.', 'another canton: no Bern');
+});
+
 test('postal-code edge cases: too short, unknown, no coordinates, failed save', () => {
   const h = harness({ weather: withPlace(cached(T0)) });
   const kb = h.keyboard();
@@ -316,7 +411,9 @@ test('postal-code edge cases: too short, unknown, no coordinates, failed save', 
   assert.equal(kb.t.kb.message, 'Kein Ort mit dieser Postleitzahl.');
   kb.clear(); kb.type('53111'); h.serve();
   kb.pick(0);
-  h.last().respond({ json: { generationtime_ms: 0.1 } });
+  const asked = [];
+  for (let x = h.pending()[0]; x; x = h.pending()[0]) { asked.push(new URL(x.url).searchParams.get('name')); x.respond({ json: { generationtime_ms: 0.1 } }); }
+  assert.deepEqual(asked, ['Bonn', '53111'], 'the name (municipality "Bonn, Stadt" is the same), then the postal code');
   assert.equal(kb.t.kb.message, 'Für diesen Ort wurden keine Koordinaten gefunden.');
   assert.equal(h.state().place.lat, BONN.lat, 'the previous place stays');
   h.store.quota = true;
