@@ -820,7 +820,7 @@ try {
       const r = slot.getBoundingClientRect(), clock = document.querySelector('.caption .clock').getBoundingClientRect(), u = document.getElementById('utils').getBoundingClientRect();
       const card = visible[visible.length - 1], field = card && card.querySelector('.cw-field'), img = card && card.querySelector('.cw-field img');
       const cs = card && getComputedStyle(card);
-      return { order: cards.map(c => c.getAttribute('data-widget')), visible: visible.length, hidden: slot.hidden, left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), clockRight: Math.round(clock.right), utilsBottom: Math.round(u.bottom),
+      return { order: cards.map(c => c.getAttribute('data-widget')).filter(id => /^qa/.test(id)), visible: visible.length, hidden: slot.hidden, left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), clockRight: Math.round(clock.right), utilsBottom: Math.round(u.bottom),
         card: card && { left: card.offsetLeft + slot.offsetLeft, top: card.offsetTop + slot.offsetTop, width: card.offsetWidth, height: card.offsetHeight, transform: field.style.transform, src: img.getAttribute('src') || '', glass: getComputedStyle(card.querySelector('.cw-glass')).display, background: cs.backgroundColor, color: cs.color, shadow: cs.textShadow, padding: cs.padding, radius: cs.borderRadius },
         clockColor: getComputedStyle(document.querySelector('.caption .clock')).color, stage: document.getElementById('stage').className };
     });
@@ -912,6 +912,194 @@ try {
     check('refresh() does nothing while a sheet is open', (await layout()).card.hidden === false);
     await scene('home');
     check('The next Home render picks up the change', (await layout()).card.hidden === true);
+  });
+  await run('Weather add-on: install, place keyboard, widget slots and legibility', async () => {
+    // Routed catalog, package and Open-Meteo/OpenPLZ answers from recorded fixtures; nothing leaves the machine.
+    const BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', FX = JSON.parse(readFileSync(root + 'scripts/fixtures/weather-api.json', 'utf8'));
+    const WEATHER = { api: 1, id: 'cleantv-weather', name: 'Wetter', version: '1.0.0', kind: 'weather', description: 'Aktuelles Wetter unter der Uhr', author: 'Psychnix', license: 'MIT' };
+    const entry = { ...WEATHER, path: 'cleantv-packages/cleantv-weather/1.0.0.json', sha256: createHash('sha256').update(JSON.stringify(WEATHER)).digest('hex') };
+    const ORIGINS = ['https://raw.githubusercontent.com', 'https://api.open-meteo.com', 'https://geocoding-api.open-meteo.com', 'https://openplzapi.org'];
+    const cors = { 'access-control-allow-origin': '*' }, seen = [];
+    const json = (route, body) => route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(body) });
+    const key = u => u.searchParams.get('name') + (u.searchParams.get('countryCode') ? '|' + u.searchParams.get('countryCode') : '');
+    const serve = async p => {
+      await p.route(BASE + 'cleantv-catalog.json', r => { seen.push('catalog'); return json(r, { api: 2, addons: [entry] }); });
+      await p.route(BASE + 'cleantv-packages/**', r => { seen.push('package'); return r.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify(WEATHER) }); });
+      await p.route('https://geocoding-api.open-meteo.com/**', r => { const u = new URL(r.request().url()); seen.push('geocoding ' + key(u)); return json(r, FX.geocoding[key(u)] || {}); });
+      await p.route('https://openplzapi.org/**', r => { const u = new URL(r.request().url()), k = u.pathname.split('/')[1] + '/' + u.searchParams.get('postalCode'); seen.push('openplz ' + k); return json(r, FX.openplz[k] || []); });
+      await p.route('https://api.open-meteo.com/**', r => {
+        seen.push('forecast');
+        // The recorded answer, dated today and tomorrow in Bonn (UTC+1) so the high and low apply.
+        const f = JSON.parse(JSON.stringify(FX.forecast)), day = n => new Date(Date.now() + 3600000 + n * 86400000).toISOString().slice(0, 10);
+        f.daily.time = [day(0), day(1)];
+        return json(r, f);
+      });
+    };
+    await page({}, serve);
+    check('Startup with the weather module but no package requests nothing', seen.length === 0, seen);
+    const card = '#cleantvWidgets [data-widget="cleantv-weather"]';
+    check('Without the package there is no weather card', await current.evaluate(sel => { const c = document.querySelector(sel); return !c || c.hidden; }, card));
+    current.__allowExternal = ORIGINS.slice(0, 1);
+    await scene('settings'); await act('settings.group.addons'); await act('addon.tab.discover'); await act('addon.refresh');
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.details.cleantv-weather"]'));
+    await act('addon.details.cleantv-weather'); await act('addon.install.cleantv-weather');
+    await current.waitForFunction(() => CleanFrameAddons.state().installed['cleantv-weather'] && !CleanFrameAddons.state().busy);
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.settings.cleantv-weather"]'));
+    check('Installing fetches only the catalog and the package', same(seen, ['catalog', 'package']), seen);
+    await act('addon.settings.cleantv-weather');
+    const rows = await current.evaluate(() => ({ title: document.getElementById('appearanceTitle').textContent, actions: ShoreQA.actions().filter(a => a.indexOf('cleantv.weather.') === 0), reasons: [...document.querySelectorAll('#appearanceRows .setting-reason')].map(e => e.textContent) }));
+    check('Weather settings list the place and five display toggles with the credits', rows.title === 'Weather' && same(rows.actions, ['cleantv.weather.place', 'cleantv.weather.show.name', 'cleantv.weather.show.temp', 'cleantv.weather.show.range', 'cleantv.weather.show.wind', 'cleantv.weather.show.icon']) && /Open-Meteo\.com \(CC BY 4\.0\).*GeoNames \(CC BY 4\.0\).*OpenPLZ \(ODbL\)/.test(rows.reasons.join(' ')), rows);
+    const fits = await current.evaluate(() => { const rows = document.getElementById('appearanceRows').getBoundingClientRect(), hint = document.getElementById('appearanceDesc').getBoundingClientRect(), scale = document.getElementById('stage').getBoundingClientRect().width / 1920; return { bottom: Math.round(rows.bottom / scale), hint: Math.round(hint.top / scale) }; });
+    check('The settings rows end above the OK hint', fits.bottom <= fits.hint, fits);
+    check('Choosing nothing yet requests no weather data', same(seen, ['catalog', 'package']), seen);
+
+    // The place keyboard, driven by the remote: arrows and OK on the on-screen keys.
+    current.__allowExternal = ORIGINS;
+    await act('cleantv.weather.place');
+    await current.waitForFunction(() => ShoreQA.where().view === 'cleantv.weather.keyboard');
+    const layout = await current.evaluate(() => CleanTVKeyboard.layout());
+    const at = id => { for (let r = 0; r < layout.length; r++) for (const k of layout[r]) if (k.id === id) return { r, c: k.col }; throw Error('No key ' + id); };
+    const focusKey = async () => (await call('where')).focusAction.replace('cleantv.kb.', '');
+    async function press(id) {
+      const target = at(id);
+      for (let i = 0; i < 24; i++) {
+        const now = await focusKey();
+        if (now === id) { await nav('ok'); return; }
+        const here = at(now);
+        await nav(here.r < target.r ? 'down' : here.r > target.r ? 'up' : here.c < target.c ? 'right' : 'left');
+      }
+      throw Error('The remote could not reach key ' + id);
+    }
+    let where = await call('where');
+    check('The keyboard opens with focus on A and one focused key', where.focusAction === 'cleantv.kb.a' && where.focusCount === 1, where);
+    const startsAt = seen.length;
+    for (const ch of 'bonn') await press(ch);
+    const typed = () => current.locator('.kb-value').textContent();
+    check('Remote typing capitalises the first letter', await typed() === 'Bonn', await typed());
+    await current.waitForFunction(() => document.querySelector('[data-action="cleantv.kb.pick.0"]'));
+    const suggestions = await current.evaluate(() => [...document.querySelectorAll('.kb-item')].filter(e => !e.hidden).map(e => e.querySelector('.kb-name').textContent + ' | ' + e.querySelector('.kb-detail').textContent));
+    check('One debounced name search lists the places', same(seen.slice(startsAt), ['geocoding Bonn']) && suggestions[0] === 'Bonn | Nordrhein-Westfalen', { seen: seen.slice(startsAt), suggestions });
+    for (let i = 0; i < 12 && !(await call('where')).focusAction.startsWith('cleantv.kb.pick.'); i++) await nav('right');
+    where = await call('where');
+    check('Right from the last key column enters the suggestions', where.focusAction === 'cleantv.kb.pick.0' && where.focusCount === 1, where);
+    await nav('ok');
+    await current.waitForFunction(() => ShoreQA.state().settingsGroup === 'addon-settings');
+    await current.waitForFunction(() => CleanTVWeather.state().forecast);
+    check('OK on a suggestion saves the place, closes the keyboard and loads the forecast', (await current.evaluate(() => CleanTVWeather.state().place.name)) === 'Bonn' && seen[seen.length - 1] === 'forecast');
+    await current.waitForFunction(() => /^As of \d\d:\d\d/.test(document.querySelector('.section-cleantv-weather-place .setting-reason')?.textContent || ''));
+    check('The settings show the place and the time of the data', /Bonn/.test(await current.locator('[data-action="cleantv.weather.place"]').textContent()));
+
+    // Remote digits for postal codes; Backspace deletes there, Back leaves without saving.
+    await act('cleantv.weather.place');
+    await current.waitForFunction(() => ShoreQA.where().view === 'cleantv.weather.keyboard');
+    await current.keyboard.type('53111');
+    await current.waitForFunction(() => document.querySelector('[data-action="cleantv.kb.pick.0"]'));
+    check('Digit keys type a postal code and list its places', await typed() === '53111' && /53111 · Nordrhein-Westfalen/.test(await current.locator('.kb-item:not([hidden])').first().textContent()) && seen.includes('openplz de/53111'), seen);
+    await current.keyboard.press('Backspace');
+    check('Backspace deletes in the keyboard instead of leaving it', await typed() === '5311' && (await call('where')).view === 'cleantv.weather.keyboard');
+    await nav('back');
+    check('Back closes the keyboard and keeps the place', (await state()).settingsGroup === 'addon-settings' && (await current.evaluate(() => CleanTVWeather.state().place.detail)) === 'Nordrhein-Westfalen');
+
+    // One display toggle through the settings row; the Home preview keeps the slots.
+    await act('cleantv.weather.show.wind');
+    const toggled = await current.evaluate(() => ({ tick: document.querySelector('[data-action="cleantv.weather.show.wind"]').getAttribute('aria-checked'), wind: document.querySelector('[data-widget="cleantv-weather"] .cw-wx-wind').className }));
+    check('A display toggle clears its tick and hides only its slot', toggled.tick === 'false' && / is-off/.test(toggled.wind), toggled);
+    await act('cleantv.weather.show.wind');
+
+    // Home: fixed slots in Dock and List for every combination of the five toggles.
+    const geometry = () => current.evaluate(sel => {
+      const c = document.querySelector(sel), scale = document.getElementById('stage').getBoundingClientRect().width / 1920;
+      if (!c || c.hidden || !c.getClientRects().length) return null;
+      const box = e => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map(v => Math.round(v / scale)); };
+      const slots = {};
+      c.querySelectorAll('[data-slot]').forEach(e => { slots[e.getAttribute('data-slot')] = { box: box(e), shown: getComputedStyle(e).visibility !== 'hidden', text: e.textContent }; });
+      return { card: box(c), slots, icon: c.querySelector('.cw-wx-icon svg') ? box(c.querySelector('.cw-wx-icon svg')) : null };
+    }, card);
+    const showOnly = flags => current.evaluate(show => { const s = CleanTVWeather.state(); CleanTVStore.write('cleantv.weather.v1', { place: s.place, show, forecast: s.forecast }); CleanTVWeather.reload(); ShoreQA.render(); }, flags);
+    const KEYS = ['name', 'temp', 'range', 'wind', 'icon'];
+    for (const layoutName of ['dock', 'list']) {
+      await look({ layout: layoutName }); await scene('home');
+      const full = await geometry();
+      check(layoutName + ': the widget shows Bonn with a 96px pictogram', full && full.slots.name.text === 'Bonn' && full.slots.temp.text === '8°' && /^↑ 10° · ↓ 8°$/.test(full.slots.range.text) && full.slots.wind.text === '5 km/h' && full.icon && full.icon[2] === 96 && full.icon[3] === 96, full);
+      check(layoutName + ': the card sits below the clock' + (layoutName === 'dock' ? ' at left 140, top 260' : ', right-aligned at 1780, top 300'), layoutName === 'dock' ? full.card[0] === 140 && full.card[1] === 260 : full.card[0] + full.card[2] === 1780 && full.card[1] === 300, full.card);
+      const mirrored = layoutName === 'list' ? full.slots.icon.box[0] > full.slots.temp.box[0] : full.slots.icon.box[0] < full.slots.temp.box[0];
+      check(layoutName + ': the pictogram sits ' + (layoutName === 'list' ? 'right of' : 'left of') + ' the temperature', mirrored, full.slots);
+      const moved = [];
+      for (let mask = 0; mask < 32; mask++) {
+        const flags = Object.fromEntries(KEYS.map((k, i) => [k, !(mask & (1 << i))]));
+        await showOnly(flags);
+        const g = await geometry();
+        if (mask === 31) { if (g) moved.push({ mask, expected: 'hidden', g }); continue; }
+        const wrong = !g || !same(g.card, full.card) || KEYS.some(k => g.slots[k].shown !== flags[k] || !same(g.slots[k].box, full.slots[k].box));
+        if (wrong) moved.push({ mask, g });
+      }
+      await showOnly(Object.fromEntries(KEYS.map(k => [k, true])));
+      check(layoutName + ': every toggle combination keeps each slot and the card in place; all off hides the card', moved.length === 0, moved.slice(0, 3));
+    }
+    check('The widget plate uses no live filters', (await noLiveFilters()).length === 0, await noLiveFilters());
+
+    // Legibility: the ink against the brightest (or, for dark ink, darkest) tenth of the plate behind it.
+    const contrast = async () => {
+      const clip = await current.evaluate(sel => { const c = document.querySelector(sel), r = c.getBoundingClientRect(); c.querySelector('.cw-content').style.visibility = 'hidden'; return { x: r.x, y: r.y, width: r.width, height: r.height }; }, card);
+      const png = (await current.screenshot({ clip })).toString('base64');
+      return current.evaluate(async ([sel, b64]) => {
+        const c = document.querySelector(sel); c.querySelector('.cw-content').style.visibility = '';
+        const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode();
+        const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height;
+        const g = canvas.getContext('2d'); g.drawImage(img, 0, 0);
+        const d = g.getImageData(0, 0, canvas.width, canvas.height).data, px = [];
+        const lin = v => { v /= 255; return v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4); }, L = (r, gg, b) => .2126 * lin(r) + .7152 * lin(gg) + .0722 * lin(b);
+        for (let i = 0; i < d.length; i += 4) px.push([d[i], d[i + 1], d[i + 2], L(d[i], d[i + 1], d[i + 2])]);
+        px.sort((a, b) => a[3] - b[3]);
+        const pick = q => px[Math.floor(q * (px.length - 1))], rgb = s => s.match(/[\d.]+/g).slice(0, 3).map(Number);
+        const ratio = (ink, alpha) => {
+          const inkL = L(ink[0], ink[1], ink[2]), bg = inkL > pick(.5)[3] ? pick(.9) : pick(.1);
+          const mix = ink.map((v, i) => v * alpha + bg[i] * (1 - alpha)), m = L(mix[0], mix[1], mix[2]);
+          return +((Math.max(m, bg[3]) + .05) / (Math.min(m, bg[3]) + .05)).toFixed(2);
+        };
+        return { big: ratio(rgb(getComputedStyle(c.querySelector('.cw-big')).color), 1), small: ratio(rgb(getComputedStyle(c).color), .8) };
+      }, [card, png]);
+    };
+    const weak = [];
+    for (const layoutName of ['dock', 'list']) {
+      for (const w of walls) { await look({ bg: 'photo', wall: w.id, layout: layoutName }); await scene('home'); const r = await contrast(); if (r.big < 4 || r.small < 3) weak.push([layoutName, w.id, r]); }
+      for (const bg of ['dark', 'light']) { await look({ bg, layout: layoutName }); await scene('home'); const r = await contrast(); if (r.big < 7 || r.small < 4.5) weak.push([layoutName, bg, r]); }
+    }
+    check('Weather text is legible on every photo (4:1 temperature, 3:1 smaller lines) and on dark and light (7:1, 4.5:1)', weak.length === 0, weak);
+
+    // 720p: the same layout, scaled with the stage.
+    await look({ bg: 'photo', wall: walls[0].id, layout: 'dock' }); await scene('home');
+    const big = await geometry();
+    await current.setViewportSize({ width: 1280, height: 720 });
+    await current.waitForFunction(() => Math.round(document.getElementById('stage').getBoundingClientRect().width) === 1280);
+    const small = await geometry();
+    const clipped = await current.evaluate(sel => [...document.querySelectorAll(sel + ' [data-slot]')].filter(e => e.scrollWidth > e.clientWidth + 1).map(e => e.getAttribute('data-slot')), card);
+    check('At 720p the card and every slot keep their stage geometry without clipping', same(small, big) && clipped.length === 0, { big, small, clipped });
+    await current.setViewportSize({ width: 1920, height: 1080 });
+
+    // Restart without adaptive ink, as on the 2017 TV: the stored place and forecast render at once without
+    // a request, and the curated ink stays legible on every photo.
+    const stored = await current.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter(k => /^clean(tv|frame)\./.test(k)).map(k => [k, localStorage.getItem(k)])));
+    const before = seen.length;
+    await closePage();
+    await page({ seed: undefined }, async p => {
+      p.__allowExternal = ORIGINS;
+      await serve(p);
+      await p.addInitScript(entries => {
+        if (!sessionStorage.getItem('__cleantv_weather')) { Object.keys(entries).forEach(k => localStorage.setItem(k, entries[k])); sessionStorage.setItem('__cleantv_weather', '1'); }
+        Object.defineProperty(window, 'CleanFrameAdaptiveInk', { configurable: true, get: () => ({}), set: () => {} });
+      }, stored);
+    });
+    await scene('home');
+    check('After a restart the cached weather shows without a request', (await geometry())?.slots.temp.text === '8°' && seen.length === before, seen.slice(before));
+    const curated = [];
+    for (const layoutName of ['dock', 'list']) for (const w of walls) { await look({ bg: 'photo', wall: w.id, layout: layoutName }); await scene('home'); const r = await contrast(); if (r.big < 4 || r.small < 3) curated.push([layoutName, w.id, r]); }
+    check('Without adaptive ink (2017 TV) the weather text stays legible on every photo', curated.length === 0, curated);
+    // Disabling the package hides the card and stops requests.
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-weather'); await act('addon.toggle.cleantv-weather');
+    await current.waitForFunction(() => CleanFrameAddons.state().installed['cleantv-weather'].enabled === false);
+    await scene('home');
+    check('A disabled package hides the weather card', (await geometry()) === null && seen.length === before, seen.slice(before));
   });
   await run('Settings focus never changes the applied Home', async () => {
     await page();
@@ -1369,6 +1557,186 @@ try {
     check('Browser launch honestly requires TV', /TV/.test(await current.locator('#stage').innerText()));
     await nav('back'); await library();
     check('Browser All Apps has no installed fixtures', /TV/.test(await current.locator('#stage').innerText()) && !(await current.locator('[data-action^="apps.open."]').count()));
+  });
+  await run('Add-on wallpapers: streamed picker, favourites, rotation, reload and removal', async () => {
+    const BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', CATALOG_URL = BASE + 'cleantv-catalog.json', INDEX_URL = BASE + 'cleantv-wallpapers/index.json';
+    const cors = { 'access-control-allow-origin': '*' };
+    const FILES = { jpg: 'image.jpg', thumb: 'thumb.jpg', panel: 'panel.jpg', 'study-soft': 'study-soft.jpg', 'field-blur': 'field-blur.jpg', 'field-frost': 'field-frost.jpg', 'field-clear': 'field-clear.jpg' };
+    const asset = (id, role) => root + 'app/assets/' + (role === 'jpg' ? 'wallpapers/' + id + '.jpg' : role === 'thumb' || role === 'panel' ? 'wallpapers/' + id + '-' + role + '.jpg' : 'materials/' + id + '-' + role + '.jpg');
+    // Bundled JPEGs stand in for generated output under add-on IDs; twelve photos, so a favourite can be the eleventh.
+    const named = [['aw-berg', 'Berg am See', 'summit'], ['aw-see', 'Stiller See', 'alpine'], ['aw-tal', 'Weites Tal', 'amber']];
+    // The longest title the generator and the module allow: 120 characters from a file name.
+    const LONG = 'Sonnenuntergang ueber dem Wattenmeer bei Ebbe mit Prielen Moewen und einem einsamen Leuchtturm am fernen Horizont Herbst';
+    const photos = named.concat(Array.from({ length: 9 }, (_, i) => ['aw-extra-' + (i + 1), i === 8 ? LONG : 'Extra ' + (i + 1), 'mint'])).map(([id, title, from]) => {
+      const bytes = Object.fromEntries(Object.keys(FILES).map(role => [role, readFileSync(asset(from, role))]));
+      const files = Object.fromEntries(Object.entries(bytes).map(([role, data]) => [role, { path: 'cleantv-wallpapers/generated/' + id + '/' + FILES[role], size: data.length, sha256: createHash('sha256').update(data).digest('hex') }]));
+      return { id, title, bytes, entry: { id, title, rev: files.jpg.sha256.slice(0, 12), tone: 'light', ut: { tr: 'mist', br: 'light' }, frostVeil: 0.2, files } };
+    });
+    const pkg = { api: 1, id: 'cleantv-wallpapers', name: 'Wallpapers', version: '1.0.0', kind: 'wallpapers', description: 'Own photos', author: 'QA', license: 'MIT', index: 'cleantv-wallpapers/index.json' };
+    const listing = { ...pkg, path: 'cleantv-packages/cleantv-wallpapers/1.0.0.json', sha256: createHash('sha256').update(JSON.stringify(pkg)).digest('hex') };
+    const requests = [];
+    const serve = async p => {
+      p.on('request', request => { if (request.url().startsWith(BASE)) requests.push({ url: request.url(), type: request.resourceType() }); });
+      await p.route(CATALOG_URL, route => route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify({ api: 2, addons: [listing] }) }));
+      await p.route(BASE + listing.path, route => route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify(pkg) }));
+      await p.route(INDEX_URL, route => route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify({ api: 1, entries: photos.map(x => x.entry) }) }));
+      await p.route(BASE + 'cleantv-wallpapers/generated/**', route => {
+        const [id, file] = route.request().url().split('/').slice(-2), photo = photos.find(x => x.id === id), role = Object.keys(FILES).find(r => FILES[r] === file);
+        // Stiller See streams but cannot be downloaded, so rotation must skip it.
+        if (!photo || !role || id === 'aw-see' && route.request().resourceType() !== 'image') return route.fulfill({ status: 404, headers: cors, body: 'missing' });
+        return route.fulfill({ status: 200, contentType: 'image/jpeg', headers: cors, body: photo.bytes[role] });
+      });
+    };
+    const downloads = () => requests.filter(r => r.type !== 'image' && r.url.includes('/generated/'));
+    const thumbs = () => requests.filter(r => r.url.endsWith('/thumb.jpg')).map(r => r.url.split('/').slice(-2)[0]);
+    const storedCopy = id => current.waitForFunction(id => window.CleanTVWallpapers.stored(id), id, { timeout: 20000 });
+    const hint = () => current.locator('#appearanceDesc').innerText();
+    const starred = () => current.evaluate(() => [...document.querySelectorAll('.wallpaper-star[aria-checked="true"]')].map(e => e.getAttribute('data-action').slice(15)));
+    await page({ minuteMs: 120 }, serve);
+    check('Startup without the add-on sends no wallpaper request', requests.length === 0, requests);
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
+    current.__expectedFailures.push('/generated/aw-see/');
+    await scene('settings'); await act('settings.group.addons'); await act('addon.tab.discover'); await act('addon.refresh');
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.details.cleantv-wallpapers"]'));
+    await act('addon.details.cleantv-wallpapers'); await act('addon.install.cleantv-wallpapers');
+    await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    const ids = await current.evaluate(() => CleanFrameWallpapers.map(w => w.id));
+    check('Install fetches the index once and appends the add-on photos after the built-ins', same(ids, walls.map(w => w.id).concat(photos.map(x => x.id))) && requests.filter(r => r.url === INDEX_URL).length === 1 && !downloads().length, { ids, requests });
+
+    await wallpaper();
+    const names = await current.locator('.wallpaper-choice .setting-name').allTextContents();
+    check('The picker names every photo, add-on titles as they are', same(names, walls.map(w => w.name).concat(photos.map(x => x.title))), names);
+    check('Hidden add-on rows stream no thumbnail', !thumbs().length, thumbs());
+    await nav('right');
+    check('Right moves from a photo to its star', (await state()).focusAction === 'wallpaper.star.' + walls[0].id && (await call('where')).focusCount === 1 && /Add to favourites/.test(await hint()), { focus: (await state()).focusAction, hint: await hint() });
+    await nav('ok');
+    check('OK stars the photo and saves the favourite', same((await stored()).favourites, [walls[0].id]) && same(await starred(), [walls[0].id]) && /Remove from favourites/.test(await hint()));
+    await nav('ok');
+    check('OK again removes the star', same((await stored()).favourites, []) && same(await starred(), []));
+    await nav('down'); await wallpaperSettled(walls[1].id);
+    check('Up and Down keep the star column while browsing', (await state()).focusAction === 'wallpaper.star.' + walls[1].id && (await state()).wallpaperPicker.candidate === walls[1].id);
+    await nav('left');
+    check('Left returns from the star to its photo', (await state()).focusAction === 'wallpaper.choose.' + walls[1].id);
+    const geometry = await current.evaluate(() => [...document.querySelectorAll('.wallpaper-choice')].filter(r => getComputedStyle(r).visibility !== 'hidden').map(row => {
+      const r = row.getBoundingClientRect(), star = row.querySelector('.wallpaper-star').getBoundingClientRect(), name = row.querySelector('.setting-name').getBoundingClientRect(), tick = row.querySelector('.setting-tick').getBoundingClientRect();
+      return star.left >= r.left && star.right <= r.right && star.top >= r.top && star.bottom <= r.bottom && name.right <= star.left && tick.right <= star.left;
+    }));
+    check('Each visible star sits inside its row, right of the name and tick', geometry.length >= 5 && geometry.every(Boolean), geometry);
+
+    // To Berg am See (row 16): only rows that become visible stream their thumbnails.
+    await nav(...Array(14).fill('down')); await wallpaperSettled('aw-berg');
+    check('Only visible add-on rows stream thumbnails', same(thumbs(), ['aw-berg']), thumbs());
+    check('A browsed add-on photo streams and saves nothing', (await state()).shown.wall === 'aw-berg' && (await stored()).wallpaper === walls[0].id && !downloads().length
+      && (await wallpaperBundle()).photo === BASE + 'cleantv-wallpapers/generated/aw-berg/image.jpg', await wallpaperBundle());
+    await nav('ok'); await ready();
+    check('OK applies the add-on photo', (await state()).committed.wall === 'aw-berg' && same(await wallpaperApplied(), ['wallpaper.choose.aw-berg']));
+    await storedCopy('aw-berg');
+    check('Only the chosen photo is downloaded: seven verified files', same(downloads().map(r => r.url.split('/').slice(-2).join('/')).sort(), Object.values(FILES).map(f => 'aw-berg/' + f).sort()), downloads());
+    await nav('right', 'ok');
+    await nav(...Array(6).fill('up')); await wallpaperSettled('summit'); await nav('ok');
+    await nav(...Array(7).fill('down')); await wallpaperSettled('aw-see'); await nav('ok');
+    check('Stars mark add-on and built-in photos alike, in starring order', same((await stored()).favourites, ['aw-berg', 'summit', 'aw-see']), (await stored()).favourites);
+    await nav('back'); await ready();
+    check('Back keeps the applied add-on photo', (await state()).shown.wall === 'aw-berg');
+
+    // Rotation over favourites, in WALLS order, skipping Stiller See (no local copy).
+    await act('background.rotation'); await act('rotation.5');
+    check('The rotation reason explains favourites', /favourites/.test(await current.locator('#appearanceRows').innerText()));
+    await scene('home');
+    const seen = [];
+    for (let i = 0; i < 4; i++) {
+      const before = (await state()).wallpaper;
+      await current.waitForFunction(id => ShoreQA.state().wallpaper !== id && !ShoreQA.state().pending, before, { timeout: 8000 });
+      seen.push((await state()).wallpaper);
+    }
+    check('Rotation alternates over the available favourites only', same(seen, ['summit', 'aw-berg', 'summit', 'aw-berg']), seen);
+    await current.waitForFunction(() => ShoreQA.state().wallpaper === 'aw-berg' && !ShoreQA.state().pending);
+    check('A stored add-on photo rotates in from its local copy', (await wallpaperBundle()).photo.startsWith('blob:'), await wallpaperBundle());
+    check('Rotation tried to keep the add-on favourites locally', downloads().some(r => r.url.includes('/aw-see/')) && !(await current.evaluate(() => window.CleanTVWallpapers.stored('aw-see'))));
+
+    // An eleventh add-on favourite keeps its star but gets the storage hint.
+    await call('preferences', { mode: 'fixed', wall: 'aw-berg', favourites: photos.slice(3).map(x => x.id).concat(['aw-berg']) }); await ready();
+    await call('preferences', { mode: '60' });
+    await wallpaper();
+    await nav('down'); await wallpaperSettled('aw-see'); await nav('right', 'ok');
+    const eleventh = await stored();
+    check('An eleventh add-on favourite is starred with a hint that ten are kept', eleventh.favourites.length === 11 && eleventh.favourites.at(-1) === 'aw-see' && /At most 10 add-on favourites/.test(await current.locator('#appearanceStatus').innerText()), eleventh.favourites);
+    await nav('left');
+    check('The hint disappears with the next key', !/At most 10/.test(await current.locator('#appearanceStatus').innerText()));
+    await nav('back'); await ready();
+    await act('background.rotation'); await act('rotation.fixed');
+    await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote && w.id !== ShoreQA.state().committed.wall && window.CleanTVWallpapers.stored(w.id)), null, { timeout: 20000 });
+    check('Rotation off keeps only the chosen add-on photo locally; the stars stay', (await stored()).favourites.length === 11 && await current.evaluate(() => CleanFrameWallpapers.filter(w => w.remote && window.CleanTVWallpapers.stored(w.id)).map(w => w.id).join()) === (await state()).committed.wall);
+
+    // Reload: the saved add-on ID survives start-up validation and its local copy needs no network.
+    await look({ wall: 'aw-berg' }); await storedCopy('aw-berg');
+    current.__allowExternal = []; const count = requests.length;
+    await current.reload(); await ready(); await current.waitForLoadState('networkidle');
+    check('After a reload the add-on photo is still chosen and shown from its local copy', (await state()).committed.wall === 'aw-berg' && (await wallpaperBundle()).photo.startsWith('blob:') && requests.length === count, { bundle: await wallpaperBundle(), requests: requests.slice(count) });
+    check('Favourites survive the reload', (await stored()).favourites.length === 11);
+
+    // A 120-character add-on title ends with an ellipsis wherever the chosen photo is named, and wraps in the picker status.
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
+    await look({ wall: 'aw-extra-9' });
+    const clipped = (name, limit) => current.evaluate(([name, limit]) => {
+      const el = document.querySelector(name), edge = document.querySelector(limit), style = getComputedStyle(el), box = el.getBoundingClientRect(), range = document.createRange();
+      range.selectNodeContents(el);
+      // Text past its box stays visible unless overflow clips it.
+      const right = style.overflowX === 'visible' ? Math.max(box.right, range.getBoundingClientRect().right) : box.right;
+      return { text: el.textContent, right, limit: edge.getBoundingClientRect().left, ellipsis: el.scrollWidth > el.clientWidth && style.textOverflow === 'ellipsis' };
+    }, [name, limit]);
+    await group('background');
+    const detailRow = await clipped('.section-wall .setting-name', '.section-wall .setting-forward');
+    check('A long add-on title ends with an ellipsis before the chevron of the Background row', detailRow.text === LONG && detailRow.right <= detailRow.limit + 0.5 && detailRow.ellipsis, detailRow);
+    await scene('settings');
+    const overviewRow = await clipped('.settings-group[data-id="background"] .settings-group-value', '.settings-group[data-id="background"] > .ico');
+    check('A long add-on title ends with an ellipsis before the chevron in the Settings overview', overviewRow.text === LONG && overviewRow.right <= overviewRow.limit + 0.5 && overviewRow.ellipsis, overviewRow);
+    await wallpaper();
+    const caption = await current.evaluate(() => {
+      const status = document.getElementById('appearanceStatus').getBoundingClientRect(), name = document.querySelector('.wallpaper-preview-name').getBoundingClientRect();
+      const row = document.querySelector('[data-action="wallpaper.choose.aw-extra-9"]'), title = row.querySelector('.setting-name'), style = getComputedStyle(title);
+      return { status: [status.left, status.right, status.bottom], name: [name.left, name.right, name.bottom], rowName: title.getBoundingClientRect().right, star: row.querySelector('.wallpaper-star').getBoundingClientRect().left,
+        rowEllipsis: title.scrollWidth > title.clientWidth && style.overflowX === 'hidden' && style.textOverflow === 'ellipsis' };
+    });
+    check('In the picker a long title wraps inside the status and ends with an ellipsis before the star',
+      caption.name[0] >= caption.status[0] && caption.name[1] <= caption.status[1] && caption.status[2] <= 1080 && caption.rowName <= caption.star && caption.rowEllipsis, caption);
+    await nav('back'); await ready();
+
+    // Removal switches to the first built-in favourite first, then removes the entries and their data.
+    await call('preferences', { favourites: ['summit', 'aw-berg'] });
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.remove.cleantv-wallpapers');
+    check('The removal dialog names the wallpapers', /Its wallpapers and stored photos are removed/.test(await current.locator('#sheet').innerText()));
+    await act('message.addonRemove');
+    await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote), null, { timeout: 15000 });
+    const after = await current.evaluate(async () => ({ wall: ShoreQA.state().committed.wall, keys: Object.keys(localStorage).filter(k => k.startsWith('cleantv.wallpapers')), dbs: indexedDB.databases ? (await indexedDB.databases()).map(d => d.name) : [] }));
+    check('Removal keeps a built-in photo and leaves no add-on data', after.wall === 'summit' && !after.keys.length && !after.dbs.includes('cleantv-wallpapers'), after);
+
+    // With Background Dark or Light the last applied add-on photo is not shown: Disable and removal finish at once.
+    const reinstall = async () => {
+      await scene('settings'); await act('settings.group.addons'); await act('addon.tab.discover'); await act('addon.refresh');
+      await current.waitForFunction(() => document.querySelector('[data-action="addon.details.cleantv-wallpapers"]'));
+      await act('addon.details.cleantv-wallpapers'); await act('addon.install.cleantv-wallpapers');
+      await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    };
+    const leftAddon = async () => {
+      const gone = await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote), null, { timeout: 15000 }).then(() => true, () => false);
+      return current.evaluate(async gone => ({ gone, wall: ShoreQA.state().committed.wall, bg: ShoreQA.state().committed.bg, remote: CleanFrameWallpapers.filter(w => w.remote).length,
+        keys: Object.keys(localStorage).filter(k => k.startsWith('cleantv.wallpapers')), dbs: indexedDB.databases ? (await indexedDB.databases()).map(d => d.name) : [] }), gone);
+    };
+    const darkAddonPhoto = async () => {
+      await look({ bg: 'photo', wall: 'aw-berg' }); await storedCopy('aw-berg');
+      await look({ bg: 'dark' });
+    };
+    await reinstall(); await darkAddonPhoto();
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.toggle.cleantv-wallpapers');
+    const disabled = await leftAddon();
+    check('Disable with Background Dark leaves the add-on photos and keeps their data', disabled.gone && walls.some(w => w.id === disabled.wall) && disabled.bg === 'dark' && disabled.keys.length > 0 && disabled.dbs.includes('cleantv-wallpapers'), disabled);
+    await act('addon.toggle.cleantv-wallpapers');
+    await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    await darkAddonPhoto();
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.remove.cleantv-wallpapers'); await act('message.addonRemove');
+    const removed = await leftAddon();
+    check('Removal with Background Dark finishes: a built-in photo, no entries, no record and no database', removed.gone && walls.some(w => w.id === removed.wall) && removed.bg === 'dark' && !removed.keys.length && !removed.dbs.includes('cleantv-wallpapers'), removed);
   });
   section = 'Run integrity';
   report.sourceAfter = hashes();

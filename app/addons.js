@@ -28,6 +28,7 @@
     'Unsupported package identity or API.': 'Nicht unterstützte Paketkennung oder API.', 'Unsupported widget kind.': 'Nicht unterstützte Widget Art.',
     'Invalid package metadata.': 'Ungültige Paketangaben.', 'Widget text is too long.': 'Der Widget Text ist zu lang.', 'Unsupported time zone.': 'Nicht unterstützte Zeitzone.',
     'Invalid package path.': 'Ungültiger Paketpfad.', 'Invalid package checksum.': 'Ungültige Paketprüfsumme.',
+    'Unsupported wallpaper index.': 'Nicht unterstützter Hintergrund-Index.',
     'Refresh the catalog before downloading.': 'Aktualisiere vor dem Herunterladen den Katalog.', 'Package checksum mismatch.': 'Die Prüfsumme des Pakets stimmt nicht.',
     'Package does not match catalog.': 'Das Paket passt nicht zum Katalog.', 'Package could not be read.': 'Das Paket konnte nicht gelesen werden.',
     'Package download failed (no connection, certificate or access policy).': 'Das Paket konnte nicht geladen werden (keine Verbindung, Zertifikat oder Zugriffsregel).',
@@ -35,7 +36,8 @@
     'An update cannot change the add-on type.': 'Ein Update kann die Art des Add-ons nicht ändern.', 'This add-on is already up to date.': 'Dieses Add-on ist bereits aktuell.',
     'Add-on is not installed.': 'Das Add-on ist nicht installiert.', 'Could not save add-ons.': 'Die Add-ons konnten nicht gespeichert werden.',
     'Disable another widget first (maximum three active widgets).': 'Deaktiviere zuerst ein anderes Widget (höchstens drei aktive Widgets).',
-    'Unknown add-on action.': 'Unbekannte Add-on Aktion.'
+    'Unknown add-on action.': 'Unbekannte Add-on Aktion.',
+    'The weather add-on must use the ID cleantv-weather.': 'Das Wetter Add-on muss die ID cleantv-weather verwenden.', 'The weather add-on has unsupported fields.': 'Das Wetter Add-on enthält nicht unterstützte Felder.'
   };
   function installedVersion(item, runtime) {
     var result = {}, actual = runtime && runtime[item.id];

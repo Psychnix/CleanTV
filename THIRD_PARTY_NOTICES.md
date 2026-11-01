@@ -28,6 +28,18 @@ The fifteen photo pages were individually checked on 20 October 2026. Each displ
 
 Photographers retain their rights. Wallpapers, thumbnails, panel backgrounds and material fields derive from the credited photographs and retain their terms. The Unsplash licence permits copying, modification and distribution subject to its restrictions, including on selling unmodified images and building a competing image service.
 
+## Weather and place data (Samsung weather add-on)
+
+The weather add-on (`app/tizen-weather.js`) requests data at runtime; no data set is bundled with the app. The recorded answers in `scripts/fixtures/weather-api.json` are test fixtures from the same services and keep the same terms. Pages checked on 1 November 2026.
+
+| Source | Terms and attribution |
+| --- | --- |
+| [Open-Meteo](https://open-meteo.com/) forecast and geocoding APIs | "API data are offered under Attribution 4.0 International (CC BY 4.0)" ([licence](https://open-meteo.com/en/licence)). "You must include a link next to any location Open-Meteo data are displayed", for example "Weather data by Open-Meteo.com". The widget shows `Wetter: Open-Meteo.com` below the data (a TV cannot show a link); the add-on settings repeat it with the licence. The free API may only be used for non-commercial purposes; "Less than 10'000 API calls per day, 5'000 per hour and 600 per minute" ([terms](https://open-meteo.com/en/terms)). One TV makes at most about 100 forecast calls a day. |
+| [GeoNames](https://www.geonames.org/) place names and coordinates (through Open-Meteo geocoding, "Location data based on GeoNames") | "This work is licensed under a Creative Commons Attribution 4.0 License" ([about](https://www.geonames.org/about.html)). "You should give credit to GeoNames when using data or web services with a link or another reference to GeoNames." "The data is provided "as is" without warranty or any representation of accuracy, timeliness or completeness." ([terms](https://www.geonames.org/export/)). Credited in the add-on settings. |
+| [OpenPLZ API](https://www.openplzapi.org/) postal codes for Germany, Austria, Switzerland and Liechtenstein | "The processed data is licensed under the ODC Open Database Licence (ODbL)"; use is free of charge and also permitted in commercial projects ([FAQ](https://www.openplzapi.org/en/faq/)). Credited in the add-on settings as `OpenPLZ (ODbL)`; only the chosen place name and its coordinates are stored. |
+
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) and [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/) apply to the data, not to CleanTV's code. The weather pictograms are original CleanTV drawings under the project's MIT licence.
+
 ## Development dependencies and exports
 
 Development dependencies retain the licences in their npm packages. They are not copied into the TV JavaScript runtime.
