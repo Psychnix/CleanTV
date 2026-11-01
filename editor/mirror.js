@@ -29,6 +29,9 @@ export function initMirror(ui){
     latest=result.state;
     try{await show(id);}catch(error){if(id!==epoch)return;ui.problem(error);await wait(2000);continue;}
     if(id!==epoch)return;
+   }else if(result.phase==='live'&&shown&&latest){
+    // No new state, but a live read: re-apply the last one so any local drift in the frame is corrected.
+    const w=page();if(w?.CleanTVMirror&&!w.CleanTVMirror.needsReload(latest))w.CleanTVMirror.apply(latest);
    }
    seq=result.seq;ui.phase(result,shown);
    // The server waits for news; this pause only guards against a fast error loop.

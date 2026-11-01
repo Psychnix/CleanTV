@@ -496,8 +496,28 @@ class TizenBackendTests(unittest.TestCase):
             self.assertFalse(worker.is_alive(), 'The reader stops once no editor tab asks for it')
             self.assertTrue(fake.closed.wait(5), 'The CDP WebSocket is closed')
             self.assertEqual(mirror.status()['state'], 'stopped')
+            self.assertIsNone(mirror.state, 'The last TV state is dropped when the reader stops')
+            self.assertIsNone(mirror.version(), 'No TV version is served after the reader stops')
+            self.assertIsNone(mirror.fresh(3), 'A stopped reader offers no fresh state')
+            self.assertGreaterEqual(mirror.seq, second['seq'], 'The sequence keeps counting')
         self.assertEqual(len(self.forward_creates()), len(self.forward_removes()), 'Every reader forward is removed')
         self.assertEqual(self.tv.open_forwards, set(), 'Nothing stays listening after the reader stops')
+
+    def test_closing_live_drops_the_mirrored_tv_state(self):
+        fake = self.inspector([json.dumps(STATE)])
+        self.remember_forward(remote=48283)
+        mirror = self.store.mirror
+        with patch.dict(os.environ, CLEANTV_MIRROR_INTERVAL_MS='100'), \
+             patch.object(self.tv, 'free_port', return_value=fake.port), \
+             patch.object(self.tv, 'inspector', return_value=dict(target=dict(id='page1', ws='/devtools/page/page1'))):
+            result = mirror.read(-1, wait=5)
+            while 'state' not in result:
+                result = mirror.read(result['seq'], wait=5)
+            self.assertEqual(mirror.version(), '0.9.0', 'The TV version is served while Live runs')
+            mirror.close()
+        self.assertIsNone(mirror.state, 'close() drops the last TV state (title, place, device name)')
+        self.assertIsNone(mirror.version(), 'No TV version is served after Live closes')
+        self.assertIsNone(mirror.fresh(3))
 
     def test_mirror_without_debug_mode_waits_and_never_restarts(self):
         self.store.mirror.IDLE = .5

@@ -52,7 +52,7 @@ try{
  await page.route('**/api/editor/tv/mirror?*',async route=>{
   mirrorRequests++;const since=Number(new URL(route.request().url()).searchParams.get('since'));
   if(since===feed.seq)await new Promise(resolve=>setTimeout(resolve,250));
-  const body={seq:feed.seq,phase:feed.phase,message:feed.message,age:0,localVersion:'0.9.0'};if(since!==feed.seq&&feed.state)body.state=feed.state;
+  const body={seq:feed.seq,phase:feed.phase,message:feed.message,age:feed.age??0,localVersion:'0.9.0'};if(since!==feed.seq&&feed.state)body.state=feed.state;
   await route.fulfill({json:body}).catch(()=>{});
  });
  await page.route('**/api/editor/tv/debug',async route=>{debugPosts.push(route.request().headers()['x-cleanframe-token']);if(holdDebug)await holdDebug;return route.fulfill({json:readyStatus});});
@@ -91,6 +91,56 @@ try{
  assert.equal(await page.evaluate(()=>JSON.stringify(CleanFrameEditor.project)),draft,'The mirror leaves the draft unchanged');
  assert.match(await page.locator('#liveCaption').textContent(),/Stand/);
  console.log('Settings path, focus, add-on detail, preferences, Spotify and add-on wallpapers follow the feed; the draft stays unchanged.');
+ // Keep the add-on wallpaper entry so these later steps redraw without reloading the frame.
+ const awEntry={id:'aw-test',name:'Testfoto',rev:'0123456789ab',tone:'dark',ut:{tr:'light',br:'light'},frostVeil:.2,listColumn:0,dockQuiet:false,clockMist:false,gone:false,stored:false};
+ const withWall=change=>tv(s=>{s.state.committed.wall='aw-test';s.state.committed.favourites=['aw-test'];s.state.shown.wall='aw-test';s.where.wallpaper='aw-test';s.walls.entries=[awEntry];change?.(s);});
+ const frameView=()=>page.evaluate(()=>document.getElementById('mirror').contentWindow.CleanFrameDesign.context().view);
+ // #15 The caption shows the last confirmed read and the separate last-change time; a silent TV is flagged.
+ push(withWall(s=>at(s,'home','','home.app.youtube')));
+ await page.waitForFunction(()=>/zuletzt geändert/.test(document.querySelector('#liveCaption').textContent),null,{timeout:20000});
+ assert.match(await page.locator('#liveCaption').textContent(),/Stand \d/,'Stand is the last confirmed read');
+ feed={...feed,age:8};
+ await page.waitForFunction(()=>/keine Antwort vom TV seit/.test(document.querySelector('#liveCaption').textContent),null,{timeout:20000});
+ assert.match(await page.locator('#liveCaption').textContent(),/keine Antwort vom TV seit 8 s/,'A silent TV is flagged in the caption');
+ feed={...feed,age:0};
+ console.log('Stand is the last confirmed read; a silent TV is flagged (#15).');
+ // #11 Message views show the TV's own text, not an editor placeholder.
+ push(withWall(s=>{at(s,'message','','message.back');s.context.view='message.error';s.message={title:'App nicht erreichbar',line:'Diese App konnte nicht geöffnet werden.',note:'Bitte später erneut versuchen.',addonId:''};}));
+ await page.waitForFunction(()=>{const w=document.getElementById('mirror').contentWindow,t=w.document.querySelector('.msg-title');return !!t&&t.textContent==='App nicht erreichbar'&&w.document.querySelector('.msg-line').textContent==='Diese App konnte nicht geöffnet werden.';},null,{timeout:20000});
+ // #11 An uninstall dialog for an add-on that is not installed falls back to the list instead of looping.
+ push(withWall(s=>{at(s,'message','','message.back');s.context.view='message.addonRemove';s.message={title:'Entfernen?',line:'',note:'',addonId:'cleantv-missing'};}));
+ await page.waitForFunction(()=>document.getElementById('mirror').contentWindow.CleanFrameDesign.context().view==='appearance.addons',null,{timeout:20000});
+ console.log('Message text comes from the TV; an uninstall dialog for a missing add-on falls back to the list (#11).');
+ // #6 The wallpaper picker candidate follows the TV, even scrolled far past the six visible rows.
+ const candidateIs=cand=>page.waitForFunction(c=>{const w=document.getElementById('mirror').contentWindow;return w.ShoreQA&&w.ShoreQA.state&&(w.ShoreQA.state().wallpaperPicker||{}).candidate===c;},cand,{timeout:20000});
+ const pick=(cand,zone)=>push(withWall(s=>{at(s,'wallpaper','wallpaper','wallpaper.'+(zone==='star'?'star':'choose')+'.'+cand);s.context.view='wallpaper';s.state.committed.wall='aw-test';s.state.wallpaperPicker={candidate:cand,applied:'aw-test',zone:zone||'photo',top:0};}));
+ pick('summit');await candidateIs('summit');
+ pick('alpine');await candidateIs('alpine');
+ pick('forest','star');await candidateIs('forest');
+ await page.waitForFunction(()=>(document.getElementById('mirror').contentWindow.ShoreQA.state().wallpaperPicker||{}).zone==='star',null,{timeout:20000});
+ console.log('The wallpaper picker candidate and zone follow the TV past the visible rows (#6).');
+ // #7 The mirror takes no keyboard input: a key never reaches a document listener and is cancelled.
+ push(withWall(s=>at(s,'home','','home.app.youtube')));
+ await page.waitForFunction(()=>document.getElementById('mirror').contentWindow.ShoreQA.state().focusAction==='home.app.youtube',null,{timeout:20000});
+ const keys=await page.evaluate(()=>{const w=document.getElementById('mirror').contentWindow;let reached=false;const probe=()=>{reached=true;};w.document.addEventListener('keydown',probe);const ev=new w.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true});const ok=w.document.body.dispatchEvent(ev);w.document.removeEventListener('keydown',probe);return {reached,prevented:!ok};});
+ assert.equal(keys.reached,false,'A keydown never reaches a document listener in the mirror (#7)');
+ assert.equal(keys.prevented,true,'The mirror cancels keyboard input (#7)');
+ // #7 Local drift in the frame is corrected on the next (even empty) read.
+ await page.evaluate(()=>document.getElementById('mirror').contentWindow.ShoreQA.editorScene('apps'));
+ assert.equal(await frameView(),'apps','The frame can be nudged off the TV scene');
+ await page.waitForFunction(()=>document.getElementById('mirror').contentWindow.CleanFrameDesign.context().view==='home',null,{timeout:20000});
+ console.log('The mirror takes no keyboard input and re-syncs local drift (#7).');
+ // #12 A Samsung reorder is applied live (no reload); a recent-apps change reloads the frame.
+ await page.evaluate(()=>{document.getElementById('mirror').contentWindow.__mirrorMark=1;});
+ push(withWall(s=>{at(s,'home','','home.app.netflix');s.state.committed.home=['netflix','youtube','stremio','rJeHak5zRg.Spotify'];}));
+ await page.waitForFunction(()=>document.getElementById('mirror').contentWindow.ShoreQA.state().committed.home[0]==='netflix',null,{timeout:20000});
+ assert.equal(await page.evaluate(()=>document.getElementById('mirror').contentWindow.__mirrorMark),1,'A Samsung reorder applies live, without reloading the frame (#12)');
+ push(withWall(s=>{at(s,'home','','home.app.youtube');s.state.committed.recent=['netflix'];}));
+ await page.waitForFunction(()=>{const w=document.getElementById('mirror').contentWindow;return w&&w.CleanTVMirror&&w.ShoreQA&&typeof w.ShoreQA.ready==='function'&&w.ShoreQA.ready()&&w.__mirrorMark===undefined;},null,{timeout:20000});
+ // Settle on home with the reloaded structure (recent kept) so the next step sees a steady frame.
+ push(withWall(s=>{at(s,'home','','home.app.youtube');s.state.committed.recent=['netflix'];}));
+ await page.waitForFunction(()=>document.getElementById('mirror').contentWindow.ShoreQA.state().focusAction==='home.app.youtube',null,{timeout:20000});
+ console.log('Home reorders apply live; a recent-apps change reloads the frame (#12).');
  await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});document.dispatchEvent(new Event('visibilitychange'));});
  await page.waitForTimeout(400);let count=mirrorRequests;await page.waitForTimeout(1500);
  assert.equal(mirrorRequests,count,'A hidden tab stops reading');assert.equal(await page.locator('#mirror').getAttribute('src'),'about:blank');
@@ -109,9 +159,10 @@ try{
  let release;holdDebug=new Promise(r=>{release=r;});
  await page.click('#mirrorDebug');await page.waitForSelector('#dialog[open]');
  await page.evaluate(()=>{const b=document.getElementById('dialogSave');b.click();document.getElementById('dialogForm').requestSubmit();b.click();});
- await page.keyboard.press('Enter');
- await page.waitForFunction(()=>document.getElementById('dialogSave').disabled,null,{timeout:5000});
+ // The submit disables the button synchronously and the held restart keeps it disabled (no polling race).
+ assert.equal(await page.locator('#dialogSave').evaluate(el=>el.disabled),true,'The restart button is disabled while it runs');
  assert.equal(await page.locator('#dialogSave').textContent(),'Wird neu gestartet …','The restart button shows progress while it runs');
+ await page.keyboard.press('Enter');  // an implicit Enter submit cannot fire a second restart
  await page.waitForTimeout(300);release();holdDebug=null;
  await page.waitForFunction(()=>!document.querySelector('#dialog').open);
  assert.equal(debugPosts.length,1,'A double submit restarts CleanTV only once');assert.ok(debugPosts[0]);

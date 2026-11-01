@@ -433,6 +433,8 @@ class TizenMirror:
 
     def version(self):
         with self.condition:
+            if self.phase != 'live':
+                return None
             app = (self.state or {}).get('app') or {}
             return app.get('version') if isinstance(app.get('version'), str) else None
 
@@ -516,6 +518,9 @@ class TizenMirror:
             with self.condition:
                 if self.phase not in ['unconfigured']:
                     self.phase = 'stopped'
+                # Drop the mirrored TV values (title, place, device name); the sequence keeps counting.
+                self.state = None
+                self.ticked = None
                 self.worker = None
                 self.condition.notify_all()
 
@@ -602,3 +607,7 @@ class TizenMirror:
                 except ValueError:
                     pass
             self.tv.open_forwards.discard(local)
+        with self.condition:
+            # Nothing stale is served after Live closes (#2).
+            self.state = None
+            self.ticked = None

@@ -64,6 +64,17 @@
     }
     return { addonId: addon, addonTab: tab ? tab.getAttribute('data-action') : '' };
   });
+  // Message/dialog views are drawn in the sheet; the add-on behind an uninstall dialog names it.
+  take('message', function () {
+    var sheet = document.getElementById('sheet');
+    if (!sheet || sheet.hidden) return null;
+    var title = sheet.querySelector('.msg-title');
+    if (!title) return null;
+    var remove = document.querySelector('#appearance [data-action^="addon.remove."]');
+    function clip(el) { return el ? String(el.textContent || '').slice(0, 200) : ''; }
+    return { title: clip(title), line: clip(sheet.querySelector('.msg-line')), note: clip(sheet.querySelector('.msg-note')),
+      addonId: remove ? String(remove.getAttribute('data-action')).slice(13) : '' };
+  });
   take('link', function () {
     var l = window.CleanFrameAddonSetup.link() || {};
     return { phase: String(l.phase || ''), expiresAt: Number(l.expiresAt) || 0, message: String(l.message || '').slice(0, 200) };

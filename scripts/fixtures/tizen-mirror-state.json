@@ -26,6 +26,7 @@
     }
   },
   "detail": {"addonId": "", "addonTab": ""},
+  "message": null,
   "link": {"phase": "idle", "expiresAt": 0, "message": ""},
   "design": {"version": 1, "rules": []},
   "addons": {

@@ -31,8 +31,12 @@
       apps: (view.appRecords || []).map(a => ({appId: a.appId, name: a.name, brand: a.brand || ''}))
     };
   }
-  // Values the page reads once while loading; a change needs a fresh page.
-  const structure = b => JSON.stringify([b.legacy, b.caps, b.record.appRecords, (b.walls.entries || []).map(e => [e.id, e.rev, !!e.gone, e.name, e.tone])]);
+  // Values the page reads once while loading; a change needs a fresh page. App records are keyed by id
+  // (a reorder is a preference change, applied live, not a reload) and the recent-apps list is included
+  // (a change there needs a fresh page); lastApp stays out, so it alone never reloads the frame.
+  const structure = b => JSON.stringify([b.legacy, b.caps,
+    (b.record.appRecords || []).slice().sort((x, y) => x.id < y.id ? -1 : x.id > y.id ? 1 : 0).map(a => [a.id, a.name, a.brand || '']),
+    b.record.recent || [], (b.walls.entries || []).map(e => [e.id, e.rev, !!e.gone, e.name, e.tone])]);
 
   let feed = null;
   try { feed = window.parent !== window ? window.parent.CleanTVMirrorFeed : null; } catch { feed = null; }
@@ -54,6 +58,14 @@
   storage.setItem('cleantv.home.v1', JSON.stringify(boot.record));
   window.CleanFramePreview = true;
   window.ShoreQA = {minuteMs: 1e12};  // No wallpaper rotation in a redrawn picture.
+  if (!draft) {
+    // The Live-Spiegel takes no keyboard input: the TV drives it. Keys never reach CleanTV's handlers,
+    // and nothing in the frame grabs real DOM focus (which would scroll or steal focus from the editor).
+    HTMLElement.prototype.focus = function () {};
+    ['keydown', 'keypress', 'keyup'].forEach(type => {
+      window.addEventListener(type, event => { event.stopImmediatePropagation(); if (event.key !== 'Tab') event.preventDefault(); }, true);
+    });
+  }
   if (boot.legacy && window.CSS && CSS.supports) {
     // The TV's Chrome 47 has no custom properties; legacy.js runs because of ?legacy=1.
     const supports = CSS.supports.bind(CSS);
@@ -139,7 +151,7 @@
       },
       link(operation) {
         if (operation === 'state') return copy(link);
-        if (draft && operation === 'begin') link = {phase: 'pending', expiresAt: Date.now() / 1000 + 600};
+        if (draft && operation === 'begin') link = {phase: 'pending', code: 'PREVIEW', expiresAt: Date.now() + 600000};
         if (draft && operation === 'cancel') link = {phase: 'idle'};
         return {ok: true};
       },
@@ -172,7 +184,9 @@
     const view = where.view || 'home', group = where.settingsGroup || '';
     if (view === 'message') {
       const msg = String(context.view || '').replace(/^message\./, '');
-      return {view, msg, key: 'message|' + msg};
+      const m = s.message || {}, addonId = m.addonId || '';
+      const content = m.title || m.line || m.note ? {title: m.title || '', line: m.line || '', note: m.note || ''} : null;
+      return {view, msg, addonId, content, key: ['message', msg, addonId, JSON.stringify(content)].join('|')};
     }
     if (view === 'appearance') {
       const addonId = group === 'spotify' || group === 'spotify-link' ? 'spotify' : ['addon-detail', 'addon-settings'].includes(group) ? detail.addonId || '' : '';
@@ -207,9 +221,41 @@
     } else if (path.view === 'wallpaper') {
       QA.editorScene('settings');
       if (!(act('settings.group.background') && act('background.wallpaper'))) QA.editorScene('wallpaper');
-    } else if (path.view === 'message') QA.editorScene('message.' + (MESSAGES.includes(path.msg) ? path.msg : 'error'));
-    else QA.editorScene(path.view);
+    } else if (path.view === 'message') {
+      if (path.msg === 'addonRemove') {
+        // Only an installed add-on has a removal dialog; otherwise just show the add-on list.
+        if (own(addons.installed, path.addonId)) QA.editorScene('message.addonRemove', path.addonId);
+        else QA.editorScene('appearance.addons');
+      } else if (path.msg === 'error') QA.editorScene('message.error', undefined, path.content);
+      else QA.editorScene('message.' + (MESSAGES.includes(path.msg) ? path.msg : 'error'));
+    } else QA.editorScene(path.view);
   }
+  // Where the mirror page actually sits right now (view and settings group), for drift detection.
+  function place() {
+    const w = window.ShoreQA.where();
+    return (w.view || '') + '|' + (w.settingsGroup || '');
+  }
+  // Walk the local wallpaper picker to the TV's candidate and zone, scrolling past the visible rows.
+  function follow(p) {
+    const QA = window.ShoreQA, picker = () => QA.state().wallpaperPicker;
+    if (!picker()) return;
+    if (picker().zone === 'star') QA.nav(['left']);
+    if (picker().zone === 'back') QA.nav(['down']);
+    for (let step = 0; step < 128 && picker() && picker().candidate !== p.candidate && picker().zone !== 'back'; step++) {
+      const before = picker().candidate; QA.nav(['down']);
+      if (!picker() || picker().candidate === before) break;
+    }
+    for (let step = 0; step < 128 && picker() && picker().candidate !== p.candidate && picker().zone !== 'back'; step++) {
+      const before = picker().candidate; QA.nav(['up']);
+      if (!picker() || picker().candidate === before) break;
+    }
+    const now = picker();
+    if (!now) return;
+    if (p.zone === 'star' && now.zone !== 'star') QA.nav(['right']);
+    else if (p.zone === 'back' && now.zone !== 'back') QA.nav(['left']);
+    else if (p.zone !== 'star' && p.zone !== 'back' && now.zone === 'star') QA.nav(['left']);
+  }
+  let landed = '';
   function apply(s) {
     const QA = window.ShoreQA, D = window.CleanFrameDesign;
     if (draft || !s || !QA || !QA.state) return;
@@ -223,9 +269,15 @@
     if (!same(next.spotify, spotify)) { spotify = next.spotify; publish(); }
     if (!same(next.link, link)) { link = next.link; window.dispatchEvent(new CustomEvent('cleanframe:spotify-link', {detail: {phase: link.phase}})); }
     const path = target(s);
-    if (path.key !== scene) { replay(path); scene = path.key; }
-    const focus = (s.where || {}).focusAction;
-    if (focus && QA.state().focusAction !== focus) QA.focus(focus);
+    // Re-replay when the TV moved (new key) or the mirror page drifted from where we last left it (#7).
+    if (path.key !== scene || place() !== landed) {
+      try { replay(path); } catch (e) { QA.editorScene('home'); }  // one bad replay must not loop every 2 s (#11)
+      scene = path.key;
+    }
+    const picker = (s.state || {}).wallpaperPicker;
+    if (path.view === 'wallpaper' && picker) follow(picker);  // the picker candidate follows the TV, even scrolled past the rows (#6)
+    else { const focus = (s.where || {}).focusAction; if (focus && QA.state().focusAction !== focus) QA.focus(focus); }
+    landed = place();
     revision++;
   }
 

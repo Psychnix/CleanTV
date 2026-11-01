@@ -6,7 +6,7 @@ const round=value=>Math.round(value*100)/100;
 const text=(tag,value)=>{const node=document.createElement(tag);node.textContent=value;return node;};
 
 export function initWorkspace(api){
- let live=false,chat=false,tv=null,tvBusy=false,debugBusy=false,mirrorStatus='',mirrorLocal='',frameTimer,frameEpoch=0,videoStarted=0,lastFrame=null,chatKey='',reference='',guideDragging=false,lastGuides='',lastTargets='',chatBusy=false;
+ let live=false,chat=false,tv=null,tvBusy=false,debugBusy=false,mirrorStatus='',mirrorLocal='',mirrorChanged=0,mirrorTvVersion='',frameTimer,frameEpoch=0,videoStarted=0,lastFrame=null,chatKey='',reference='',guideDragging=false,lastGuides='',lastTargets='',chatBusy=false;
  const ratio=()=>pixelRatio(api.liveProject?.ui.resolution),currentGuides=()=>((api.liveProject?.guides)||[]).filter(g=>g.view===api.liveProject.ui.view&&g.layout===api.liveProject.preferences.layout);
  const visiblePixel=value=>round(value*ratio());
  const video=new NativeVideo($('liveFrame'),(width,height)=>{if(!live)return;lastFrame={width,height};$('liveEmpty').hidden=true;$('retryLive').hidden=true;$('dimensions').textContent=`${width} × ${height} · Live`;},error=>{if(!live)return;$('liveEmpty').hidden=false;$('liveEmpty').textContent=error.message;$('liveCaption').textContent='Live-Verbindung unterbrochen';$('retryLive').hidden=false;});
@@ -23,7 +23,7 @@ export function initWorkspace(api){
   live=value;const mirrored=live&&tizen();document.body.classList.toggle('live-mode',live);document.body.classList.toggle('mirror-mode',mirrored);
   $('draftTab').classList.toggle('active',!live);$('liveTab').classList.toggle('active',live);
   $('draftTab').setAttribute('aria-pressed',!live);$('liveTab').setAttribute('aria-pressed',live);
-  $('liveCaption').hidden=!live;$('liveControls').hidden=!live||mirrored;$('retryLive').hidden=!live||mirrored;$('mirrorLabel').hidden=!mirrored;$('mirrorImport').hidden=!mirrored;$('mirrorDebug').hidden=true;stopVideo();mirror.stop();api.resize();
+  $('liveCaption').hidden=!live;$('liveControls').hidden=!live||mirrored;$('retryLive').hidden=!live||mirrored;$('mirrorLabel').hidden=!mirrored;$('mirrorImport').hidden=!mirrored;$('mirrorDebug').hidden=true;stopVideo();mirror.stop();mirrorChanged=0;mirrorTvVersion='';api.resize();
   if(mirrored){$('viewTitle').textContent='Produktiv am Fernseher';api.notice('Live-Spiegel vom Fernseher · nachgezeichnet aus dem Zustand von CleanTV, kein Kamerabild');startMirror();}
   else if(live){$('viewTitle').textContent='Produktiv am Fernseher';api.notice('Live vom Fernseher · kontinuierlicher Videostream');startVideo();}
   else{$('liveFrame').hidden=true;$('liveEmpty').hidden=true;api.refresh(true);$('viewTitle').textContent=$('scene').selectedOptions[0]?.textContent||'Entwurf';api.notice('Entwurf mit Beispieldaten. Dein TV bleibt unverändert.');}
@@ -58,17 +58,25 @@ export function initWorkspace(api){
   const message=state?.hidden?'CleanTV ist am Fernseher gerade nicht im Vordergrund. Der Spiegel zeigt den letzten Stand.':state?.ready===false?'CleanTV lädt am Fernseher …':'';
   $('liveEmpty').hidden=!message;if(message)$('liveEmpty').textContent=message;
  }
+ // 'Stand' is the last confirmed read (now − age), not the last change. A quiet TV still reads; a silent
+ // one is flagged. The last change time is shown separately once a state has been drawn.
+ function mirrorCaption(age){
+  const read=age==null?Date.now():Date.now()-Math.round(age*1000);
+  let caption='Stand '+new Date(read).toLocaleTimeString('de-DE')+(mirrorTvVersion?' · TV '+mirrorTvVersion:'')+(mirrorTvVersion&&mirrorLocal&&mirrorTvVersion!==mirrorLocal?' · gezeichnet mit lokaler Version '+mirrorLocal+', Abweichungen möglich':'');
+  if(age!=null&&age>=5)caption+=' · keine Antwort vom TV seit '+Math.round(age)+' s';
+  if(mirrorChanged)caption+=' · zuletzt geändert '+new Date(mirrorChanged).toLocaleTimeString('de-DE');
+  $('liveCaption').textContent=caption;
+ }
  function mirrorPhase(result,shown){
   if(!live||!tizen())return;
   mirrorLocal=result.localVersion||mirrorLocal;mirrorStatus=result.phase==='live'?'läuft':result.message||PHASES[result.phase]||result.phase;
   $('mirrorDebug').hidden=result.phase!=='debug-off';
-  if(result.phase==='live'&&shown){overlay(mirror.state);return;}
+  if(result.phase==='live'&&shown){overlay(mirror.state);mirrorCaption(result.age);return;}
   $('liveEmpty').hidden=false;$('liveEmpty').textContent=result.phase==='live'?'Live-Spiegel wird aufgebaut …':result.message||PHASES[result.phase]||'Der Live-Spiegel ist nicht verfügbar.';
  }
  function mirrorApplied(state){
   if(!live||!tizen())return;
-  overlay(state);const version=state.app?.version;
-  $('liveCaption').textContent='Stand '+new Date().toLocaleTimeString('de-DE')+(version?' · TV '+version:'')+(version&&mirrorLocal&&version!==mirrorLocal?' · gezeichnet mit lokaler Version '+mirrorLocal+', Abweichungen möglich':'');
+  overlay(state);mirrorTvVersion=state.app?.version||'';mirrorChanged=Date.now();mirrorCaption(null);
   $('dimensions').textContent='1920 × 1080 · nachgezeichnet';
  }
  function mirrorProblem(error){if(!live||!tizen())return;mirrorStatus=error.message;$('liveEmpty').hidden=false;$('liveEmpty').textContent=error.message;}
@@ -181,7 +189,7 @@ export function initWorkspace(api){
  }
  for(const [id,axis]of [['distanceX','x'],['distanceY','y']])$(id).onchange=()=>{const selected=api.selected,other=api.entries.find(e=>e.id===reference),gap=$(id).valueAsNumber;if(!selected||!other||!Number.isFinite(gap))return;const value=setDistance(selected.rect,other.rect,axis,gap/ratio()),key=axis==='x'?'offsetX':'offsetY';const offset=(selected.style[key]||0)+value-selected.rect[axis];if(Math.abs(offset)>(axis==='x'?1920:1080)){api.notice('Dieser Abstand liegt außerhalb der bearbeitbaren Fläche.');return;}api.patch({[key]:offset});renderMeasurements();};
  document.addEventListener('editor:refresh',()=>{renderGuides();rulers();renderMeasurements();if(live){$('viewTitle').textContent='Produktiv am Fernseher';if(tizen()){if(mirror.shown)$('dimensions').textContent='1920 × 1080 · nachgezeichnet';}else if(lastFrame)$('dimensions').textContent=`${lastFrame.width} × ${lastFrame.height} · Live`;}});
- document.addEventListener('visibilitychange',()=>{if(document.hidden){if(live){stopVideo();mirror.stop();}}else{status();if(live){if(tizen())startMirror();else startVideo();}if(chat)pollChat();}});
+ document.addEventListener('visibilitychange',()=>{if(document.hidden){if(live){stopVideo();mirror.stop();mirrorChanged=0;mirrorTvVersion='';}}else{status();if(live){if(tizen())startMirror();else startVideo();}if(chat)pollChat();}});
  window.addEventListener('pagehide',()=>{stopVideo();mirror.stop();});
  setInterval(status,12000);setInterval(()=>{if(chat)pollChat();},1000);status();
  api.workspace={video,mirror,source,openChat,addGuide,renderMeasurements,get reference(){return reference;},setReference:id=>{reference=id;renderMeasurements();},status};
