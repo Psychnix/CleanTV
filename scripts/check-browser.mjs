@@ -697,7 +697,7 @@ try {
     const entry = { ...JSON.parse(UPSTREAM), path: 'packages/spotify/1.0.0.json', sha256: createHash('sha256').update(UPSTREAM).digest('hex') };
     const PAIR = 'c0ffee' + '0'.repeat(26), cors = { 'access-control-allow-origin': '*' };
     const log = { catalog: 0, pair: [], polls: 0, token: [], player: 0, controls: [], preflights: [] };
-    let approved = false, tvState = '', playingNow = true;
+    let approved = false, tvState = '', playingNow = true, refuse = false;
     const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: cors, body: JSON.stringify(body) });
     const preflight = route => { log.preflights.push(new URL(route.request().url()).origin); return route.fulfill({ status: 204, headers: { ...cors, 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS', 'access-control-allow-headers': 'authorization, content-type' } }); };
     const player = () => ({ device: { id: 'qa-device-1', is_active: true, is_restricted: false, name: 'QA speaker' }, progress_ms: 30000, is_playing: playingNow, actions: { disallows: {} },
@@ -717,6 +717,7 @@ try {
         if (r.method() === 'OPTIONS') return preflight(route);
         const body = Object.fromEntries(new URLSearchParams(r.postData() || ''));
         log.token.push({ body, type: r.headers()['content-type'], authorization: r.headers().authorization || '' });
+        if (refuse && body.grant_type === 'refresh_token') return json(route, { error: 'invalid_client' }, 400);
         return json(route, { access_token: 'qa-access-' + log.token.length, token_type: 'Bearer', expires_in: 3600, scope: 'user-read-playback-state user-modify-playback-state', ...(body.grant_type === 'authorization_code' ? { refresh_token: 'qa-refresh-1' } : {}) });
       });
       await p.route(url => url.origin === API, route => {
@@ -783,6 +784,15 @@ try {
     await current.reload(); await ready(); await cardShown();
     check('A reload stays linked: one refresh with the stored token, no new pairing', log.token.length === before + 1 && log.token[before].body.grant_type === 'refresh_token' && log.token[before].body.refresh_token === 'qa-refresh-1' && log.pair.length === 1);
     check('The reloaded card shows the paused state', await current.locator('[data-action="spotify.toggle"]').getAttribute('aria-label') === 'Play');
+    // A refresh refused without invalid_grant keeps the stored token: as on Android, Sign out stays usable in reauth.
+    refuse = true; current.__expectedFailures.push(ACCOUNTS + '/api/token'); await current.reload(); await ready();
+    await current.waitForFunction(() => ShoreQA.state().spotify.webApi === 'reauth');
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.spotify'); await act('group.spotify');
+    text = await current.locator('#appearanceRows').innerText(); stored = await leaks();
+    check('Reauth with a stored token keeps Sign out enabled', /Sign in to Spotify again/.test(text) && same(stored.keys, ['cleantv.spotify.v1.a'])
+      && await current.locator('[data-action="spotify.signout"]').getAttribute('aria-disabled') !== 'true', text);
+    refuse = false; current.__expectedFailures.splice(current.__expectedFailures.indexOf(ACCOUNTS + '/api/token'), 1);
+    await current.reload(); await ready(); await cardShown();
     await scene('settings'); await act('settings.group.addons'); await act('addon.details.spotify'); await act('group.spotify');
     check('Account connected after the reload', /Account connected/.test(await current.locator('#appearanceRows').innerText()));
     await act('spotify.signout'); await act('message.signout');
