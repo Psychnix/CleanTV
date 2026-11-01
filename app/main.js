@@ -2698,7 +2698,8 @@
   // Add-on wallpapers follow the chosen photo, rotation and favourites; Home owns every switch.
   if (ADDON_WALLS) ADDON_WALLS.bind({
     state: function () {
-      var t = top(), use = [S.c.wall, S.wallShown, S.wallPending, S.shown && S.shown.wall, committedBundle && committedBundle.wall, S.previewBundle && S.previewBundle.wall];
+      // A Dark or Light background loads no bundle, so committedBundle may still name an earlier photo that is not shown.
+      var t = top(), use = [S.c.wall, S.wallShown, S.wallPending, S.shown && S.shown.wall, S.c.bg === 'photo' && committedBundle && committedBundle.wall, S.previewBundle && S.previewBundle.wall];
       if (t.id === 'wallpaper') use.push(WALLS[t.i] && WALLS[t.i].id, t.applyPending, t.previewDue);
       return { wall: S.c.wall, favourites: S.c.favourites.slice(), rotation: S.c.mode !== 'fixed', inUse: use.filter(function (id) { return typeof id === 'string' && !!id; }) };
     },

@@ -1408,6 +1408,33 @@ try {
     await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote), null, { timeout: 15000 });
     const after = await current.evaluate(async () => ({ wall: ShoreQA.state().committed.wall, keys: Object.keys(localStorage).filter(k => k.startsWith('cleantv.wallpapers')), dbs: indexedDB.databases ? (await indexedDB.databases()).map(d => d.name) : [] }));
     check('Removal keeps a built-in photo and leaves no add-on data', after.wall === 'summit' && !after.keys.length && !after.dbs.includes('cleantv-wallpapers'), after);
+
+    // With Background Dark or Light the last applied add-on photo is not shown: Disable and removal finish at once.
+    const reinstall = async () => {
+      await scene('settings'); await act('settings.group.addons'); await act('addon.tab.discover'); await act('addon.refresh');
+      await current.waitForFunction(() => document.querySelector('[data-action="addon.details.cleantv-wallpapers"]'));
+      await act('addon.details.cleantv-wallpapers'); await act('addon.install.cleantv-wallpapers');
+      await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    };
+    const leftAddon = async () => {
+      const gone = await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote), null, { timeout: 15000 }).then(() => true, () => false);
+      return current.evaluate(async gone => ({ gone, wall: ShoreQA.state().committed.wall, bg: ShoreQA.state().committed.bg, remote: CleanFrameWallpapers.filter(w => w.remote).length,
+        keys: Object.keys(localStorage).filter(k => k.startsWith('cleantv.wallpapers')), dbs: indexedDB.databases ? (await indexedDB.databases()).map(d => d.name) : [] }), gone);
+    };
+    const darkAddonPhoto = async () => {
+      await look({ bg: 'photo', wall: 'aw-berg' }); await storedCopy('aw-berg');
+      await look({ bg: 'dark' });
+    };
+    await reinstall(); await darkAddonPhoto();
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.toggle.cleantv-wallpapers');
+    const disabled = await leftAddon();
+    check('Disable with Background Dark leaves the add-on photos and keeps their data', disabled.gone && walls.some(w => w.id === disabled.wall) && disabled.bg === 'dark' && disabled.keys.length > 0 && disabled.dbs.includes('cleantv-wallpapers'), disabled);
+    await act('addon.toggle.cleantv-wallpapers');
+    await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    await darkAddonPhoto();
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.remove.cleantv-wallpapers'); await act('message.addonRemove');
+    const removed = await leftAddon();
+    check('Removal with Background Dark finishes: a built-in photo, no entries, no record and no database', removed.gone && walls.some(w => w.id === removed.wall) && removed.bg === 'dark' && !removed.keys.length && !removed.dbs.includes('cleantv-wallpapers'), removed);
   });
   section = 'Run integrity';
   report.sourceAfter = hashes();
