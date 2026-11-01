@@ -72,7 +72,7 @@
     'Restore ': 'Wiederherstellen: ', 'Couldn’t save this change.': 'Die Änderung konnte nicht gespeichert werden.',
     'Couldn’t load ': 'Laden fehlgeschlagen: ', 'Couldn’t load this appearance.': 'Diese Darstellung konnte nicht geladen werden.',
     'Return to ': 'Zurück zu ', 'Retry this change': 'Änderung erneut versuchen', 'Apply selected setting': 'Einstellung übernehmen',
-    'Choose a wallpaper': 'Hintergrundbild wählen', 'Choose a rotation interval': 'Intervall wählen', 'Open on the TV': 'Auf dem TV öffnen',
+    'Choose a wallpaper': 'Hintergrundbild wählen', 'Choose a rotation interval': 'Intervall wählen', 'Open on the TV': 'Auf dem TV öffnen', 'Open': 'Öffnen',
     'Preparing ': 'Vorbereitung: ', 'Applying ': 'Anwenden: ', 'Loading ': 'Laden: ', 'your choice': 'deiner Auswahl',
     'Applied': 'Übernommen', 'Preview': 'Vorschau', 'Couldn’t save ': 'Speichern fehlgeschlagen: ',
     'Return to Background': 'Zurück zum Hintergrund', 'Retry this photo': 'Foto erneut laden', 'Apply selected photo': 'Foto übernehmen',

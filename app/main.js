@@ -135,6 +135,11 @@
     return '<svg class="ico' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true">'
       + (underlay ? '<g class="ut-underlay" transform="translate(0 .5)">' + SVG[name] + '</g><g class="ut-ink">' + SVG[name] + '</g>' : SVG[name]) + '</svg>';
   }
+  /* The same underlay and ink layering for host widgets, on a 48-unit grid (docs/addons.md). */
+  window.CleanTVIcon = function (svgInner, size) {
+    var inner = String(svgInner || ''), side = clamp(Math.round(Number(size) || 48), 8, 256);
+    return '<svg class="ico cw-icon" viewBox="0 0 48 48" width="' + side + '" height="' + side + '" aria-hidden="true"><g class="ut-underlay" transform="translate(0 .5)">' + inner + '</g><g class="ut-ink">' + inner + '</g></svg>';
+  };
   function badge(on) {
     return on
       ? '<svg class="badge is-on" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor"/><path class="badge-tick" d="m7.6 12.4 3 3 5.8-6.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
@@ -581,6 +586,156 @@
 
   var V = {};
 
+  /* ---------- CleanTV host interfaces (docs/addons.md, "CleanTV host interfaces") ---------- */
+  // Modules loaded before main.js may leave window.X = {queue: [[...register arguments]]}; see Start.
+  var addonSettings = {}, widgets = {}, widgetCards = {}, views = {}, widgetsRendering = false;
+  function own(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+  /* A module error is reported asynchronously (legacy.js shows it on old TVs) and never stops Home. */
+  function guarded(fn, fallback) { try { return fn(); } catch (e) { setTimeout(function () { throw e; }, 0); return fallback; } }
+  var SETTINGS_API = {
+    register: function (id, provider) {
+      if (typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(id) || own(addonSettings, id)) throw new Error('Add-on settings cannot be registered: ' + id);
+      if (!provider || typeof provider.title !== 'function' || typeof provider.sections !== 'function' || typeof provider.ok !== 'function') throw new Error('Add-on settings need title(), sections() and ok(): ' + id);
+      addonSettings[id] = provider;
+    },
+    /* For ok() or key(): opens a view registered through CleanTVViews; the next render shows it. */
+    open: function (name, data) {
+      if (typeof name !== 'string' || !own(views, name)) return false;
+      push({ id: name, data: data, f: {} });
+      return true;
+    }
+  };
+  var VIEWS_API = {
+    register: function (name, view) {
+      if (typeof name !== 'string' || !/^[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+$/.test(name) || own(V, name)) throw new Error('View cannot be registered: ' + name);
+      if (!view || typeof view.key !== 'function' || typeof view.render !== 'function') throw new Error('View needs key() and render(): ' + name);
+      views[name] = view;
+      V[name] = {
+        sheet: true,
+        norm: function (t) { if (typeof view.norm === 'function') guarded(function () { view.norm(t); }); },
+        // Back closes the view unless key() handled it.
+        key: function (t, k) { if (!guarded(function () { return view.key(t, k) === true; }, false) && k === 'back') pop(); }
+      };
+      FRAMES[name] = function () { return '<div class="cleantv-view" data-slot="view"></div>'; };
+      FILLS[name] = function (t, el) { guarded(function () { view.render(el.view, t, { language: S.c.language, bg: S.c.bg }); }); };
+    }
+  };
+  var WIDGETS = {
+    register: function (id, widget) {
+      if (typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(id) || own(widgets, id)) throw new Error('Widget cannot be registered: ' + id);
+      if (!widget || typeof widget.render !== 'function') throw new Error('Widget needs render(): ' + id);
+      widgets[id] = { order: typeof widget.order === 'number' && isFinite(widget.order) ? widget.order : 0, render: widget.render };
+    },
+    /* renderHome's call. The host still hides the slot behind the expanded Spotify player. */
+    render: function (ctx) { renderWidgets(ctx); },
+    /* For a module whose data arrived later: renders the widgets again from host state, so card
+       visibility and plate alignment follow the new content. Nothing happens while a sheet is open. */
+    refresh: function () {
+      if (!S.c || widgetsRendering || V[top().id].sheet) return;
+      renderWidgets(widgetCtx(homeState(top())));
+      placeAddonCards();
+    }
+  };
+  function addonSettingsActive(id) {
+    var installed = ADDONS.state().installed, item = own(addonSettings, id) && own(installed, id) && installed[id];
+    return !!(item && item.enabled !== false);
+  }
+  function addonSettingsTitle(t) {
+    var title = addonSettingsActive(t.addonId) && guarded(function () { return addonSettings[t.addonId].title(S.c.language); }, '');
+    return typeof title === 'string' && title ? title : translate('Settings');
+  }
+  /* Provider rows in the detailSections shape. Items keep their own axis and value for ok();
+     the host shows a radio tick only from `applied`, never from Home preferences. */
+  function addonSettingsSections(t) {
+    var provider = addonSettings[t.addonId], list = addonSettingsActive(t.addonId) ? guarded(function () { return provider.sections(S.c.language); }, []) : [];
+    if (!Array.isArray(list)) return [];
+    return list.map(function (section, n) {
+      section = section && typeof section === 'object' ? section : {};
+      return {
+        id: 'cleantv-' + (typeof section.id === 'string' && /^[A-Za-z0-9_-]{1,48}$/.test(section.id) ? section.id : n),
+        title: typeof section.title === 'string' ? section.title : '', horizontal: !!section.horizontal, reason: typeof section.reason === 'string' ? section.reason : '',
+        items: (Array.isArray(section.items) ? section.items : []).filter(function (item) {
+          return item && typeof item.action === 'string' && /^[A-Za-z0-9_.-]{1,96}$/.test(item.action) && !/^(settings|addon|group|choice)\./.test(item.action) && typeof item.label === 'string';
+        }).map(function (item) {
+          return { action: item.action, label: item.label, description: typeof item.description === 'string' ? item.description : '', disabled: !!item.disabled, radio: item.axis !== undefined, applied: item.applied === true, source: item };
+        })
+      };
+    }).filter(function (section) { return section.items.length; });
+  }
+  /* OK hint: a radio choice applies, a row without `axis` opens something (it shows a forward chevron).
+     A provider may name its own hint, already in the current language, e.g. for a row that acts at once. */
+  function addonSettingsHint(item) {
+    var hint = item.source && item.source.hint;
+    if (typeof hint === 'string' && hint && hint.length <= 80) return translate(hint);
+    return translate(item.radio ? 'Apply selected setting' : 'Open');
+  }
+  function addonSettingsOk(t, item) {
+    var provider = addonSettings[t.addonId];
+    if (provider && item.source && addonSettingsActive(t.addonId)) guarded(function () { return provider.ok(item.source); });
+  }
+  function addonSettingsKey(t, k) {
+    var provider = addonSettings[t.addonId];
+    return !!(provider && typeof provider.key === 'function' && addonSettingsActive(t.addonId) && guarded(function () { return provider.key(t, k) === true; }, false));
+  }
+  function openAddonSettings(id) {
+    if (!addonSettingsActive(id)) return;
+    push({ id: 'appearance', group: 'addon-settings', addonId: id, f: { action: S.detailFocus['addon-settings.' + id] || '' } });
+  }
+  /* Each widget keeps one card: a glass plate on photos (registered material, as .ut-lens) and its content. */
+  function widgetCard(id) {
+    var card = document.createElement('section');
+    card.className = 'cw-card'; card.setAttribute('data-widget', id);
+    card.innerHTML = '<div class="cw-glass" aria-hidden="true"><div class="cw-field"><img class="ph-field-img" alt=""><div class="scrim"></div><div class="shade"></div><div class="ph-dim"></div><div class="ph-scrim"></div><div class="ph-col"></div><div class="ut-dim ut-tr"></div><div class="ut-dim ut-br"></div></div><div class="cw-veil"></div></div><div class="cw-content"></div>';
+    card._field = card.firstChild.firstChild; card._img = card._field.firstChild; card._content = card.lastChild;
+    return card;
+  }
+  function widgetCtx(hs) { return { language: S.c.language, layout: S.c.layout, bg: S.c.bg, visible: hs.mode !== 'arrange' && !spotifyExpanded() }; }
+  function renderWidgets(ctx) {
+    widgetsRendering = true;
+    try { drawWidgets(ctx); } finally { widgetsRendering = false; }
+  }
+  function drawWidgets(ctx) {
+    var ids = Object.keys(widgets).sort(function (a, b) { return widgets[a].order - widgets[b].order || (a < b ? -1 : 1); });
+    var photo = S.c.bg === 'photo' && !!S.shown, src = photo ? fieldSrc(S.shown.wall, S.shown.material) : '', top;
+    // The context always comes from host state; only `visible` is the caller's, and never behind the expanded player.
+    ctx = { language: S.c.language, layout: S.c.layout, bg: S.c.bg, visible: !!(ctx && ctx.visible) && !spotifyExpanded() };
+    widgetSlot.hidden = !ctx.visible;
+    // Without widgets nothing is measured, so Home renders exactly as before.
+    if (!ids.length) return;
+    if (S.c.layout === 'list') top = S.c.controlsPosition === 'top' ? utilsEl.offsetTop + utilsEl.offsetHeight + 40 : S.c.dateVisible ? 300 : 260;
+    else top = S.c.dateVisible ? 260 : 220;
+    widgetSlot.style.top = top + 'px';
+    ids.forEach(function (id, i) {
+      var card = widgetCards[id] || (widgetCards[id] = widgetCard(id));
+      if (widgetSlot.children[i] !== card) widgetSlot.insertBefore(card, widgetSlot.children[i] || null);
+      guarded(function () { widgets[id].render(card._content, ctx); });
+      // A widget with nothing to show leaves its element empty; the card and plate then disappear.
+      card.hidden = !card._content.firstChild;
+    });
+    if (!ctx.visible) return;
+    ids.forEach(function (id) {
+      var card = widgetCards[id];
+      if (card.hidden) return;
+      if (card._img._src !== src) { card._img._src = src; if (src) card._img.src = src; else card._img.removeAttribute('src'); }
+      if (photo) fieldTransform(card._field, widgetSlot.offsetLeft + card.offsetLeft, widgetSlot.offsetTop + card.offsetTop, card.offsetWidth, card.offsetHeight);
+    });
+  }
+  /* In List both columns sit right of the app list: the text and clock cards (#addonWidgets, addons.js)
+     move directly below visible host widgets, so the two never overlap. Without host widgets, or in
+     Dock (cards end before x 1000), they keep their own place and nothing is measured. */
+  function placeAddonCards() {
+    var cards = document.getElementById('addonWidgets'), below = '', height;
+    if (!cards) return;
+    if (S.c.layout === 'list' && !cards.hidden && cards.firstChild && !widgetSlot.hidden && Object.keys(widgets).length) {
+      height = widgetSlot.offsetHeight;
+      if (height) below = widgetSlot.offsetTop + height + 'px';
+    }
+    if (cards._below === below) return;
+    cards._below = below;
+    cards.className = below ? 'is-below-widgets' : '';
+    cards.style.top = below;
+  }
+
   /* ---------- Home (browse) ---------- */
   V.home = {
     norm: function (t) { if (t.f.zone === 'spotify' && !spotifyVisible()) t.f.zone = 'apps'; },
@@ -920,7 +1075,7 @@
     if (id === 'editor') openEditor('settings');
     else openAppearance(id);
   }
-  var DETAIL_NAMES = { software: 'Software update', remote: 'iPhone Remote', 'spotify-link': 'Spotify', display: 'Display', homescreen: 'Home screen', addons: 'Add-ons', 'addon-detail': 'Add-ons', background: 'Background', layout: 'Layout', typography: 'Typography', focus: 'Focus', rotation: 'Rotation', samsung: DEVICE_LABEL, clock: 'Clock and date', spotify: 'Spotify', language: 'Language' };
+  var DETAIL_NAMES = { software: 'Software update', remote: 'iPhone Remote', 'spotify-link': 'Spotify', display: 'Display', homescreen: 'Home screen', addons: 'Add-ons', 'addon-detail': 'Add-ons', 'addon-settings': 'Add-ons', background: 'Background', layout: 'Layout', typography: 'Typography', focus: 'Focus', rotation: 'Rotation', samsung: DEVICE_LABEL, clock: 'Clock and date', spotify: 'Spotify', language: 'Language' };
   function choice(axis, value, disabled) {
     return { action: axis === 'mode' ? 'rotation.' + value : 'choice.' + axis + '.' + value, axis: axis, value: value, disabled: !!disabled,
       label: typeof value === 'boolean' ? value ? translate('On') : translate('Off') : axis === 'font' ? FONTS[value].name : axis === 'mode' ? MODES.filter(function (m) { return m.id === value; })[0].name : value === 'both' ? translate('Both') : VALUE_NAMES[value] };
@@ -942,6 +1097,7 @@
       link('clock', 'Time and date')
     ] }];
     if (t.group === 'addons' || t.group === 'addon-detail') return addonSections(t);
+    if (t.group === 'addon-settings') return addonSettingsSections(t);
     if (t.group === 'language') return [{ id: 'language', title: translate('Language'), horizontal: true, items: options('language', ['de', 'en']) }];
     if (t.group === 'clock') return [
       { id: 'clockFormat', title: translate('Time format'), horizontal: true, items: options('clockFormat', ['12h', '24h']) },
@@ -1042,6 +1198,7 @@
     if (!state.readOnly && candidate && (!current || ADDONS.newer(candidate, ADDONS.installedVersion(current, state.runtime)))) actions.push({ action: 'addon.install.' + item.id, label: translate(current ? 'Update' : 'Download'), disabled: busy });
     if (current) {
       if (item.kind === 'native') actions.push({ action: 'addon.setup.' + item.id, label: addonText('Set up'), disabled: busy });
+      else if (own(addonSettings, item.id) && current.enabled !== false) actions.push({ action: 'addon.settings.' + item.id, label: translate('Settings'), disabled: busy });
       else if (item.id === 'spotify') actions.push({ action: 'group.spotify', label: translate('Settings'), disabled: busy });
       actions.push({ action: 'addon.toggle.' + item.id, label: item.kind === 'native' && (!item.runtime || typeof item.runtime.enabled !== 'boolean') ? addonActivation(item) : translate(item.kind === 'native' ? item.runtime.enabled ? 'Disable' : 'Enable' : item.enabled === false ? 'Enable' : 'Disable'), disabled: busy || item.kind === 'native' && (!item.runtime || typeof item.runtime.enabled !== 'boolean') });
       actions.push({ action: 'addon.remove.' + item.id, label: translate('Uninstall'), disabled: busy });
@@ -1073,7 +1230,7 @@
   }
   function detailFocus(t, item, column) {
     t.f.action = item.action;
-    if (item.action !== 'settings.back') S.detailFocus[t.group] = item.action;
+    if (item.action !== 'settings.back') S.detailFocus[t.group === 'addon-settings' ? 'addon-settings.' + t.addonId : t.group] = item.action;
     if (column !== undefined) t.f.column = column;
     if (item.axis) S.appearanceFocus = item.axis;
   }
@@ -1097,6 +1254,7 @@
     var patch = {}, error = S.lookError;
     if (item.action === 'settings.back') { detailBack(); return; }
     if (item.disabled || S.pending) return;
+    if (t.group === 'addon-settings') { addonSettingsOk(t, item); return; }
     if (item.action === 'settings.retry') {
       if (error && error.patch[error.row] !== undefined) detailFocus(t, choice(error.row, error.patch[error.row]), 0);
       if (error && error.row === 'mode') applyRotation(error.patch.mode);
@@ -1111,6 +1269,7 @@
       if (parts[1] === 'tab') { t.addonTab = parts[2]; t.addonScroll = 0; }
       else if (parts[1] === 'details') { t.addonScroll = appearanceRows.scrollTop; openAppearance('addon-detail'); top().addonId = parts.slice(2).join('.'); }
       else if (parts[1] === 'setup') { SETUP.poll('remote'); openAppearance('remote'); }
+      else if (parts[1] === 'settings') openAddonSettings(parts.slice(2).join('.'));
       else if (parts[1] === 'remove') push({ id: 'message', msg: 'addonRemove', addonId: addon.id, content: { title: translate('Uninstall add-on?'), line: addon.kind === 'native' ? addonText('Android will ask you to confirm removal. Pairings stored by this add-on are removed.') : translate('The widget is removed. Saved account and appearance settings are retained.'), actions: [['back', translate('Cancel')], ['addonRemove', translate('Uninstall')]] }, f: { b: 0 } });
       else ADDONS.request(parts[1], parts.slice(2).join('.'));
     }
@@ -1140,7 +1299,8 @@
       var axis = { background: 'bg', layout: 'layout', typography: 'font', focus: 'focus', rotation: 'mode', clock: 'clockFormat', spotify: 'spotifyEnabled', language: 'language' }[t.group];
       rows.forEach(function (items) { items.forEach(function (item) {
         if (item.action === t.f.action) exists = true;
-        if (item.axis === axis && item.value === S.c[axis]) applied = item;
+        if (t.group === 'addon-settings') { if (item.radio && item.applied && !applied) applied = item; }
+        else if (item.axis === axis && item.value === S.c[axis]) applied = item;
       }); });
       if (!exists) detailFocus(t, applied || (rows[1] || rows[0])[0], 0);
       if (t.f.column === undefined) t.f.column = detailLocation(t).column;
@@ -1185,11 +1345,13 @@
   function press(k) {
     norm();
     var t = top();
+    // An add-on settings provider may take a key before the host does.
+    var hooked = t.id === 'appearance' && t.group === 'addon-settings' && addonSettingsKey(t, k);
     // OK first reveals hidden controls; it never fires an invisible transport button.
-    var spatial = ['left', 'right', 'up', 'down'].indexOf(k) >= 0 && !t.lifted
+    var spatial = !hooked && ['left', 'right', 'up', 'down'].indexOf(k) >= 0 && !t.lifted
       && !(t.id === 'appearance' && t.f.action === 'spotify.transparency' && (k === 'left' || k === 'right'));
     var moved = spatial && window.CleanFrameDesign && window.CleanFrameDesign.navigate(k, focusedAction(), focusElement);
-    if (!moved && !(t.id === 'home' && t.f.zone === 'spotify' && !spotifyAwake && k === 'ok')) V[t.id].key(t, k);
+    if (!hooked && !moved && !(t.id === 'home' && t.f.zone === 'spotify' && !spotifyAwake && k === 'ok')) V[t.id].key(t, k);
     spotifyActivity();
     norm();
     render();
@@ -1198,7 +1360,7 @@
 
   /* ---------- Rendering ---------- */
   var $ = function (id) { return document.getElementById(id); };
-  var stage = $('stage'), homeEl = $('home'), caption = $('caption'), utilsEl = $('utils');
+  var stage = $('stage'), homeEl = $('home'), caption = $('caption'), utilsEl = $('utils'), widgetSlot = $('cleantvWidgets');
   var spotifyEl = $('spotifyPlayer'), spotifyControls = $('spotifyControls');
   var utilFocusLabel = $('utilFocusLabel'), utilFocusKey = '', appFocusName = $('appFocusName');
   var dock = $('dock'), shelf = $('shelf'), track = $('track'), plate = $('plate'), matScrim = $('matScrim'), dockEmpty = $('dockEmpty');
@@ -1260,6 +1422,7 @@
     renderFocusStatus(t);
     renderSpotify();
     ADDONS.render(t.id === 'home' && !spotifyExpanded(), S.c.language);
+    placeAddonCards();
     syncSpotify();
     resolveVars();
     if (window.CleanFrameDesign) window.CleanFrameDesign.after({ view: t.id === 'appearance' ? 'appearance.' + t.group : t.id === 'message' ? 'message.' + t.msg : t.id, layout: S.c.layout, state: spotifyExpanded() ? 'expanded' : 'compact' });
@@ -1288,6 +1451,8 @@
     if (S.c.layout === 'list') renderList(hs);
     else { photoMode = null; renderDock(hs); }
     renderAppFocusName(hs);
+    // Host widgets below the clock; hidden in arrange mode and behind the expanded Spotify player.
+    WIDGETS.render(widgetCtx(hs));
   }
 
   function clockText() {
@@ -1834,15 +1999,15 @@
     V.appearance.norm(t);
     appearanceEl.className = 'appearance detail-' + t.group;
     appearanceRows.className = 'appearance-rows';
-    appearanceTitle.textContent = translate(DETAIL_NAMES[t.group]);
+    appearanceTitle.textContent = t.group === 'addon-settings' ? addonSettingsTitle(t) : translate(DETAIL_NAMES[t.group]);
     var at = detailLocation(t), selected = at.item, error = S.lookError, status = '', hint;
     function command(item, inner, cls) {
-      var applied = item.axis && S.c[item.axis] === item.value;
+      var radio = !!(item.axis || item.radio), applied = item.axis ? S.c[item.axis] === item.value : !!(item.radio && item.applied);
       var loading = !!(item.axis && S.pending && S.pending.target[item.axis] === item.value && S.pending.row === item.axis);
       return '<button type="button" tabindex="-1" class="setting-choice' + (cls ? ' ' + cls : '') + (t.f.action === item.action ? ' is-focus' : '') + (item.disabled ? ' is-disabled' : '') + (applied ? ' is-applied' : '') + (loading ? ' is-loading' : '') + '"'
-        + (item.axis ? ' role="radio" aria-checked="' + !!applied + '"' : item.tab ? ' role="tab" aria-selected="' + !!item.active + '"' : '') + ' aria-label="' + esc(item.axis && item.value === 'both' ? translate('Icons and text') : translate(item.label)) + '" aria-disabled="' + !!item.disabled + '" aria-busy="' + loading + '"'
+        + (radio ? ' role="radio" aria-checked="' + !!applied + '"' : item.tab ? ' role="tab" aria-selected="' + !!item.active + '"' : '') + ' aria-label="' + esc(item.axis && item.value === 'both' ? translate('Icons and text') : translate(item.label)) + '" aria-disabled="' + !!item.disabled + '" aria-busy="' + loading + '"'
         + ' data-z="detail" data-i="0" data-id="' + item.action + '" data-action="' + item.action + '">' + inner
-        + (item.axis ? '<span class="setting-tick" aria-hidden="true">' + (applied ? icon('check') : '') + '</span>' : '') + '</button>';
+        + (radio ? '<span class="setting-tick" aria-hidden="true">' + (applied ? icon('check') : '') + '</span>' : '') + '</button>';
     }
     setHTML(appearanceBack, command({ action: 'settings.back', label: detailParentName() }, icon('left') + '<span>' + (detailParentName()) + '</span>', 'setting-back'));
     if (t.group === 'software') { renderSoftwareUpdate(t, command); return; }
@@ -1853,8 +2018,8 @@
         + '<div class="setting-slider' + (t.f.action === 'spotify.transparency' ? ' is-selected' : '') + '"><input class="' + (t.f.action === 'spotify.transparency' ? 'is-focus' : '') + '" type="range" min="0" max="100" step="5" tabindex="-1" aria-label="' + translate('Transparency') + '" data-z="detail" data-i="0" data-id="spotify.transparency" data-action="spotify.transparency"><output></output></div>'
         + '<p class="setting-reason">' + translate('0% solid · 100% transparent') + '</p></section>';
       return '<section class="setting-section' + (section.horizontal ? ' is-horizontal' : '') + ' section-' + section.id + '">'
-        + (section.title ? '<h3 class="setting-label" id="setting-' + section.id + '">' + translate(section.title) + '</h3>' : '')
-        + '<div class="setting-options"' + (section.items[0].axis ? ' role="radiogroup" aria-label="' + esc(translate(section.title || LOOK_NAMES[section.id] || DETAIL_NAMES[t.group])) + '"' : '') + '>'
+        + (section.title ? '<h3 class="setting-label" id="setting-' + section.id + '">' + esc(translate(section.title)) + '</h3>' : '')
+        + '<div class="setting-options"' + (section.items[0].axis || section.items[0].radio ? ' role="radiogroup" aria-label="' + esc(translate(section.title || LOOK_NAMES[section.id] || DETAIL_NAMES[t.group])) + '"' : '') + '>'
         + section.items.map(function (item) {
           var swatch = item.axis === 'bg', body = '';
           if (swatch || item.thumbnail) body += item.value === 'light' || item.value === 'dark'
@@ -1862,7 +2027,7 @@
             : '<img class="setting-swatch" src="' + WP + S.c.wall + '-thumb.jpg" alt="">';
           body += '<span class="setting-copy"><span class="setting-name">' + esc(translate(item.label)) + '</span>'
             + (item.description ? '<span class="setting-description">' + esc(translate(item.description)) + '</span>' : '') + '</span>';
-          if (!item.axis) body += icon('right', 'setting-forward');
+          if (!item.axis && !item.radio) body += icon('right', 'setting-forward');
           return command(item, body, item.description ? 'has-description' : '');
         }).join('') + '</div>'
         + (section.reason ? '<p class="setting-reason">' + esc(translate(section.reason)) + '</p>' : '') + '</section>';
@@ -1879,7 +2044,7 @@
         + command({ action: 'settings.retry', label: translate('Try again') }, "<span>" + translate("Try again") + "</span>", 'setting-retry');
     }
     setHTML(appearanceStatus, status);
-    hint = selected.disabled ? '' : selected.action === 'settings.back' ? translate('Return to ') + (detailParentName()) : selected.action === 'settings.retry' ? translate('Retry this change') : selected.axis ? translate('Apply selected setting') : selected.action === 'background.wallpaper' ? translate('Choose a wallpaper') : selected.action === 'background.rotation' ? translate('Choose a rotation interval') : translate('Open on the TV');
+    hint = selected.disabled ? '' : selected.action === 'settings.back' ? translate('Return to ') + (detailParentName()) : selected.action === 'settings.retry' ? translate('Retry this change') : t.group === 'addon-settings' ? addonSettingsHint(selected) : selected.axis ? translate('Apply selected setting') : selected.action === 'background.wallpaper' ? translate('Choose a wallpaper') : selected.action === 'background.rotation' ? translate('Choose a rotation interval') : translate('Open on the TV');
     if (selected.action === 'spotify.transparency') { setHTML(appearanceDesc, icon('left') + icon('right') + '<span>' + translate('Adjust with Left and Right') + '</span>'); return; }
     setHTML(appearanceDesc, hint ? '<span class="remote-key">OK</span><span>' + esc(hint) + '</span>' : '');
   }
@@ -2444,6 +2609,12 @@
   QA.actions = function () { var view = isSettingsDetail(top()) ? appearanceEl : sheetEl.hidden ? homeEl : sheetEl; return Array.prototype.filter.call(view.querySelectorAll('[data-action]'), renderedAction).map(function (el) { return el.getAttribute('data-action'); }); };
 
   /* ---------- Start ---------- */
+  // Publish the host registries and replay registrations queued by modules that loaded first.
+  [['CleanTVAddonSettings', SETTINGS_API], ['CleanTVViews', VIEWS_API], ['CleanTVWidgets', WIDGETS]].forEach(function (entry) {
+    var early = window[entry[0]];
+    window[entry[0]] = entry[1];
+    if (early && Array.isArray(early.queue)) early.queue.forEach(function (args) { guarded(function () { entry[1].register.apply(entry[1], args); }); });
+  });
   cueL.innerHTML = icon('left'); cueR.innerHTML = icon('right');
   spotifyControls.innerHTML = spotifyCommands.map(function (command, i) { return '<button type="button" tabindex="-1" class="spotify-button" data-z="spotify" data-i="' + i + '" data-action="spotify.' + command + '"></button>'; }).join('');
   $('spotifyOpen').innerHTML = '<img src="assets/icons/spotify.svg" alt="">' + icon('right');
