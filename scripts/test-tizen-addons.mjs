@@ -170,6 +170,8 @@ test('every failure keeps the previous catalog and names the cause', () => {
     [{ body: bytes(catalog([widget('long', { text: 'x'.repeat(501) })])) }, 'Widget text is too long.'],
     [{ body: bytes(catalog([widget('sum', { sha256: 'A'.repeat(64) })])) }, 'Invalid package checksum.'],
     [{ body: bytes(catalog([widget('path', { path: 'packages/path/../x.json' })])) }, 'Invalid package path.'],
+    [{ body: bytes(catalog([widget('path2', { path: 'cleantv-other/path2/1.0.0.json' })])) }, 'Invalid package path.'],
+    [{ body: bytes(catalog([widget('path3', { path: 'cleantv-packages/../packages/x/1.0.0.json' })])) }, 'Invalid package path.'],
     [{ body: bytes(catalog([widget('zone', { kind: 'clock', timeZone: { name: 'Europe/Berlin' } })])) }, 'Unsupported time zone.'],
     [{ body: bytes(catalog([widget('apiv', { api: 2 })])) }, 'Unsupported package identity or API.'],
     [{ body: bytes(catalog([widget('ver', { version: '1.0' })])) }, 'Unsupported package identity or API.'],
@@ -575,6 +577,20 @@ test('registered kinds are offered, validated and kept outside the widget limit'
     assert.equal(s.error, message);
     assert.equal(s.catalog.length, 4);
   }
+});
+
+test('a registered kind installs from cleantv-packages/', () => {
+  const weather = { widget: false, validate(entry) { return { city: entry.city }; } };
+  const h = harness({ kinds: [['weather', weather]] });
+  const forecast = pkg('forecast', { kind: 'weather', text: undefined, city: 'Berlin' });
+  const body = JSON.stringify(forecast);
+  const s = refreshWith(h, { body: bytes(catalog([{ ...forecast, path: 'cleantv-packages/forecast/1.0.0.json', sha256: hex(body) }])) });
+  assert.equal(s.error, '');
+  assert.equal(s.catalog[0].path, 'cleantv-packages/forecast/1.0.0.json');
+  installWith(h, 'forecast', { body: bytes(body), url: BASE + 'cleantv-packages/forecast/1.0.0.json' });
+  assert.equal(h.xhrs[h.xhrs.length - 1].url, BASE + 'cleantv-packages/forecast/1.0.0.json');
+  assert.equal(h.state().error, '');
+  assert.equal(h.state().installed.forecast.city, 'Berlin');
 });
 
 test('an enabled registered kind leaves all three widget slots free', () => {

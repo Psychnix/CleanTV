@@ -42,7 +42,8 @@
   var PREFIX = 'cleantv.addons.v1', LIMIT = 131072, PACKAGE_LIMIT = 65536, TIMEOUT = 15000, MAX_ENTRIES = 32, MAX_WIDGETS = 3;
   // "constructor" is the one Object.prototype key this pattern could match; it is never an add-on ID.
   var ID = /^(?!constructor$)[a-z][a-z0-9-]{0,47}$/, VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/, CHECKSUM = /^[a-f0-9]{64}$/;
-  var PATH = /^packages\/[a-z0-9-]+\/[0-9]+\.[0-9]+\.[0-9]+\.json$/;
+  // The fork keeps upstream kinds under packages/ and the CleanTV-only kinds under cleantv-packages/.
+  var PATH = /^(packages|cleantv-packages)\/[a-z0-9-]+\/[0-9]+\.[0-9]+\.[0-9]+\.json$/;
   var IDENTITY = ['api', 'id', 'name', 'version', 'kind', 'description', 'author', 'license', 'permissions'];
   var catalog = [], busy = false, error = '', info = { checked: false, total: 0, compatible: 0 };
   var batch = { status: 'idle', completed: 0, total: 0 }, dormant = {};
