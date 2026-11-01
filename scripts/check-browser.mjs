@@ -913,6 +913,47 @@ try {
     await scene('home');
     check('The next Home render picks up the change', (await layout()).card.hidden === true);
   });
+  await run('CleanTV widgets above three text cards in List', async () => {
+    // Three enabled text add-ons, stored out of alphabetical order, under a host card as tall as the weather card (260px).
+    const ids = ['zulu', 'alpha', 'mike'];
+    const installed = Object.fromEntries(ids.map(id => [id, { api: 1, id, name: 'Note ' + id, version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'Text card ' + id, enabled: true }]));
+    const data = JSON.stringify({ installed, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } });
+    const record = JSON.stringify({ v: 1, seq: 1, sum: createHash('sha256').update(data).digest('hex'), data });
+    await page({}, p => p.addInitScript(r => { if (!localStorage.getItem('cleantv.addons.v1.a')) localStorage.setItem('cleantv.addons.v1.a', r); }, record));
+    await look({ layout: 'list' }); await scene('home');
+    await current.evaluate(() => {
+      window.__tall = true;
+      window.CleanTVWidgets.register('tall', { order: 1, render: el => { el.innerHTML = window.__tall ? '<div style="width:420px;height:220px"></div>' : ''; } });
+      window.CleanTVWidgets.refresh();
+    });
+    const layout = () => current.evaluate(() => {
+      const box = e => { const r = e.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) }; };
+      const shown = sel => [...document.querySelectorAll(sel)].filter(e => e.getClientRects().length);
+      const compact = document.getElementById('spotifyCompact');
+      return { text: shown('#addonWidgets .addon-widget').map(e => ({ id: e.getAttribute('data-addon'), ...box(e) })), host: shown('#cleantvWidgets .cw-card').map(box),
+        slotBottom: Math.round(document.getElementById('cleantvWidgets').getBoundingClientRect().bottom), utils: box(document.getElementById('utils')), spotify: compact.getClientRects().length ? box(compact) : null };
+    });
+    const hit = (a, b) => !!b && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    // A card fits when it ends 32px above the bottom edge and 16px above controls or a player it shares x with.
+    const blocked = (r, g) => r.bottom > 1048 || [g.utils, g.spotify].some(o => o && o.left < r.right && r.left < o.right && r.bottom + 16 > o.top && r.top < o.bottom);
+    const fits = g => g.text.length > 0 && g.text.every(r => r.right === 1780 && !blocked(r, g) && !hit(r, g.utils) && !hit(r, g.spotify) && g.host.every(h => !hit(r, h)));
+    // The first cards in stored order stay directly below the host card, and only as many are left out as needed.
+    const first = g => same(g.text.map(r => r.id), ids.slice(0, g.text.length)) && g.text[0].top === g.slotBottom;
+    const full = g => { const last = g.text[g.text.length - 1]; return g.text.length === ids.length || blocked({ left: last.left, right: last.right, top: last.bottom + 16, bottom: 2 * last.bottom + 16 - last.top }, g); };
+    const counts = {};
+    let g;
+    for (const [name, patch, render] of [['List after refresh()', null, false], ['List', null, true], ['List without the date', { dateVisible: false }, true], ['List with top controls', { dateVisible: true, controlsPosition: 'top' }, true],
+      ['List with bottom controls', { controlsPosition: 'bottom' }, true], ['List with automatic controls again', { controlsPosition: 'auto' }, true]]) {
+      if (patch) await call('preferences', patch);
+      if (render) await scene('home');
+      g = await layout(); counts[name] = g.text.length;
+      check(name + ': text cards below a tall host card stay clear of the controls and the bottom edge', g.host.length === 1 && fits(g) && first(g) && full(g), g);
+    }
+    check('Changing only the controls position applies the limit again', counts['List with automatic controls again'] === counts.List && counts['List with bottom controls'] >= counts.List, counts);
+    await current.evaluate(() => { window.__tall = false; window.CleanTVWidgets.refresh(); });
+    g = await layout();
+    check('Without the host card all three text cards show again in their own place', g.host.length === 0 && same(g.text.map(r => [r.id, r.left, r.top]), [['zulu', 1000, 260], ['alpha', 1000, 436], ['mike', 1000, 612]]), g);
+  });
   await run('Weather add-on: install, place keyboard, widget slots and legibility', async () => {
     // Routed catalog, package and Open-Meteo/OpenPLZ answers from recorded fixtures; nothing leaves the machine.
     const BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', FX = JSON.parse(readFileSync(root + 'scripts/fixtures/weather-api.json', 'utf8'));

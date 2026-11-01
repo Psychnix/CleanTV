@@ -69,6 +69,39 @@ test('RFC 7636 Appendix B: S256 code challenge', () => {
   assert.equal(sha.base64url(sha.raw(u8(verifier))), 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM');
 });
 
+/* Runs sliced() with a queue for a scheduler; done must wait for the last scheduled step. */
+function sliced(bytes, slice) {
+  const queue = [];
+  let result = null, scheduled = 0;
+  sha.sliced(bytes, slice, fn => { scheduled++; queue.push(fn); }, hex => { result = hex; });
+  while (queue.length) { assert.equal(result, null, 'done before the last step'); queue.shift()(); }
+  return { result, scheduled };
+}
+
+test('sliced matches the one-shot digest and yields between steps', () => {
+  for (let length = 0; length <= 200; length++) {
+    const bytes = new Uint8Array(randomBytes(length));
+    assert.equal(sliced(bytes, 64).result, node(bytes), 'length ' + length);
+  }
+  const slice = 192;
+  for (const length of [slice - 1, slice, slice + 1, 3 * slice, 3 * slice + 17, 3 * slice + 56, 3 * slice + 63]) {
+    const bytes = new Uint8Array(randomBytes(length));
+    assert.equal(sliced(bytes, slice).result, node(bytes), 'length ' + length);
+  }
+  assert.equal(sliced(new Uint8Array(1000000).fill(0x61), 131072).result, 'cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0');
+  // 1 MiB in 128 KiB steps: eight scheduled steps; a short input still takes one.
+  const mib = new Uint8Array(randomBytes(1048576)), run = sliced(mib, 131072);
+  assert.equal(run.result, node(mib));
+  assert.equal(run.scheduled, 8);
+  assert.equal(sliced(u8('abc'), 131072).scheduled, 1);
+  // Nothing is hashed or reported before the first scheduled step runs.
+  let reported = false;
+  sha.sliced(u8('abc'), 64, () => {}, () => { reported = true; });
+  assert.equal(reported, false);
+  assert.throws(() => sha.sliced([1, 2, 3], 64, () => {}, () => {}), /SHA-256 input must be a Uint8Array\./);
+  for (const bad of [0, 100, -64, 64.5, NaN]) assert.throws(() => sha.sliced(u8('abc'), bad, () => {}, () => {}), /SHA-256 slice must be a positive multiple of 64\./, String(bad));
+});
+
 test('inputs other than Uint8Array are rejected', () => {
   for (const value of [undefined, null, 'abc', [1, 2, 3], new Uint16Array(2), new ArrayBuffer(4)]) {
     assert.throws(() => sha.bytes(value), /SHA-256 input must be a Uint8Array\./);

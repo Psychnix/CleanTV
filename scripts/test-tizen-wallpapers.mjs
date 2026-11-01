@@ -24,10 +24,10 @@ const buffer = data => { const b = Buffer.from(data); return b.buffer.slice(b.by
 const PKG = { api: 1, id: ID, name: 'Wallpapers', version: '1.0.0', kind: 'wallpapers', description: 'Own photos', author: 'Psychnix', license: 'MIT', index: 'cleantv-wallpapers/index.json' };
 const listed = (pkg = PKG) => ({ ...pkg, path: 'cleantv-packages/' + pkg.id + '/' + pkg.version + '.json', sha256: hex(JSON.stringify(pkg)) });
 /* One index entry and the bytes of its seven files; `seed` changes the bytes and so the revision. */
-function photo(id, { seed = '1', title = 'Photo ' + id, extra = {} } = {}) {
+function photo(id, { seed = '1', title = 'Photo ' + id, extra = {}, jpg = 400 } = {}) {
   const bytes = {}, files = {};
   for (const role of ROLES) {
-    bytes[role] = Buffer.from(id + '/' + role + '/' + seed + '/' + 'x'.repeat(role === 'jpg' ? 400 : 60));
+    bytes[role] = Buffer.from(id + '/' + role + '/' + seed + '/' + 'x'.repeat(role === 'jpg' ? jpg : 60));
     files[role] = { path: 'cleantv-wallpapers/generated/' + id + '/' + NAMES[role], size: bytes[role].length, sha256: hex(bytes[role]) };
   }
   return { entry: { id, title, rev: files.jpg.sha256.slice(0, 12), tone: 'dark', ut: { tr: 'light', br: 'mist' }, frostVeil: 0.3, listColumn: 2, files, ...extra }, bytes };
@@ -116,6 +116,7 @@ function harness({ local = storage(), db, clock = { now: 1700000000000 }, walls 
       if (this.aborted) return;
       const route = routes.get(this.url);
       if (route === 'offline') { if (this.onerror) this.onerror(); return; }
+      if (route === 'hold') return; // never answers; only abort() ends it
       const r = route || { status: 404, body: buffer('missing') };
       this.status = r.status || 200; this.response = r.body; this.responseURL = r.url === undefined ? this.url : r.url;
       if (this.onprogress && this.response) this.onprogress({ loaded: this.response.byteLength });
@@ -137,8 +138,10 @@ function harness({ local = storage(), db, clock = { now: 1700000000000 }, walls 
   const context = vm.createContext({ window, Date: FakeDate });
   for (const source of [SOURCES.sha, SOURCES.store, SOURCES.walls, SOURCES.host]) vm.runInContext(source, context);
   const flush = () => { let n = 0; while (timers.length) { if (++n > 100000) throw Error('Timers never settle'); timers.shift()(); } };
+  /* Runs timers one at a time until pred() holds; returns how many ran. */
+  const until = pred => { let n = 0; while (!pred()) { if (!timers.length) throw Error('Timers settled before the condition held'); n++; timers.shift()(); } return n; };
   const h = {
-    window, walls: window.CleanTVWallpapers, list: window.CleanFrameWallpapers, addons: window.FrameDevice.addons, xhrs, routes, local, idb, clock, urls, flush,
+    window, walls: window.CleanTVWallpapers, list: window.CleanFrameWallpapers, addons: window.FrameDevice.addons, xhrs, routes, local, idb, clock, urls, timers, flush, until,
     remote: () => h.list.filter(w => w.remote).map(w => w.id),
     requests: () => xhrs.map(x => x.url),
     record: () => plain(window.CleanTVStore.read(PREFIX)),
@@ -303,6 +306,60 @@ test('a file that fails its checksum or size is not stored and the photo keeps s
   }
 });
 
+test('a large photo is hashed in 128 KiB steps, one per task', () => {
+  for (const broken of [false, true]) {
+    const label = broken ? 'last step corrupted' : 'intact';
+    const h = harness(), big = photo('aw-big', { jpg: 600 * 1024 }), jpg = BASE + big.entry.files.jpg.path, thumb = BASE + big.entry.files.thumb.path;
+    h.bind(); h.install([big]);
+    if (broken) { const bytes = Buffer.from(big.bytes.jpg); bytes[bytes.length - 1] ^= 1; h.routes.set(jpg, { body: buffer(bytes) }); }
+    Object.assign(h.model, { wall: 'aw-big', shown: 'aw-big' }); h.walls.sync();
+    h.until(() => h.xhrs.some(x => x.url === jpg && x.status === 200));
+    if (!broken) {
+      // Every task between the answer and the next request hashes at most one step.
+      const tasks = h.until(() => h.requests().includes(thumb));
+      assert.ok(tasks >= Math.ceil(big.bytes.jpg.length / 131072), label + ': ' + tasks + ' tasks');
+    }
+    h.flush();
+    if (broken) {
+      assert.equal(h.walls.message(), 'A wallpaper download did not match its checksum.', label);
+      assert.deepEqual(h.idb.files(), [], label);
+      assert.equal(h.walls.stored('aw-big'), false, label);
+      assert.ok(!h.requests().includes(thumb), label + ': no further file');
+    } else {
+      assert.equal(h.record().stored['aw-big'], big.entry.rev, label);
+      assert.equal(h.walls.stored('aw-big'), true, label);
+    }
+  }
+});
+
+test('an unchanged index keeps the ten-minute wait; an index that changes the photo ends it', () => {
+  const h = harness(), a = photo('aw-a'), b = photo('aw-b'), panel = BASE + a.entry.files.panel.path;
+  h.bind(); h.install([a, b]);
+  h.routes.set(panel, { body: buffer(Buffer.from(a.bytes.panel).fill(65, 0, 1)) });
+  h.set({ wall: 'aw-a', shown: 'aw-a' });
+  assert.equal(h.walls.stored('aw-a'), false);
+  const files = () => h.requests().filter(u => u.includes('/generated/')).length, indexes = () => h.requests().filter(u => u === INDEX).length;
+  const count = files(), checked = indexes();
+  for (let i = 1; i <= 2; i++) {
+    h.clock.now += 60001; h.walls.picker(); h.flush();
+    assert.equal(indexes(), checked + i, 'picker ' + i + ' fetches the index');
+    assert.equal(files(), count, 'picker ' + i + ': the same index does not end the wait');
+  }
+  // Another photo changing leaves this wait alone.
+  const b2 = photo('aw-b', { seed: '2' });
+  h.serve([a, b2]); h.routes.set(panel, { body: buffer(Buffer.from(a.bytes.panel).fill(65, 0, 1)) });
+  h.clock.now += 60001; h.walls.picker(); h.flush();
+  assert.equal(files(), count, 'only aw-b changed');
+  // A new panel for this photo, same revision: tried again at once and stored.
+  const fixed = Buffer.from('aw-a/panel/fixed/' + 'y'.repeat(60));
+  const entry = { ...a.entry, files: { ...a.entry.files, panel: { ...a.entry.files.panel, size: fixed.length, sha256: hex(fixed) } } };
+  h.routes.set(INDEX, { body: buffer(JSON.stringify({ api: 1, entries: [entry, b2.entry] })) });
+  h.routes.set(panel, { body: buffer(fixed) });
+  h.clock.now += 60001; h.walls.picker(); h.flush();
+  assert.equal(h.walls.stored('aw-a'), true, 'the changed photo is downloaded again');
+  assert.equal(h.walls.message(), '');
+});
+
 test('rotation keeps at most ten add-on favourites; turning it off deletes them but keeps the stars', () => {
   const h = harness(), photos = Array.from({ length: 12 }, (_, i) => photo('aw-p' + i));
   const ids = photos.map(p => p.entry.id);
@@ -433,6 +490,71 @@ test('disable keeps the data and Enable restores the entries', () => {
   h.addons({ action: 'toggle', id: ID }); h.flush();
   assert.deepEqual(h.remote(), ['aw-a']);
   assert.equal(h.requests().at(-1), INDEX, 'Enable checks the index');
+});
+
+test('Disable or Uninstall during a photo download ends it at once and sends nothing more', () => {
+  for (const action of ['toggle', 'remove']) for (const hold of [true, false]) {
+    const label = action + (hold ? ', request in flight' : ', between files');
+    const h = harness(), a = photo('aw-a'), b = photo('aw-b'), jpg = BASE + a.entry.files.jpg.path;
+    h.bind(); h.install([a, b]);
+    if (hold) h.routes.set(jpg, 'hold');
+    // Rotation keeps both favourites; the first file request starts.
+    Object.assign(h.model, { favourites: ['aw-a', 'aw-b'], rotation: true }); h.walls.sync();
+    h.until(() => h.xhrs.some(x => x.sent && x.url === jpg));
+    const pending = h.xhrs.find(x => x.url === jpg);
+    h.addons({ action, id: ID }); h.flush();
+    assert.deepEqual(h.requests().filter(u => u.includes('/generated/')), [jpg], label + ': no further file request');
+    if (hold) assert.equal(pending.aborted, true, label + ': the request in flight is aborted');
+    assert.deepEqual(h.remote(), [], label + ': the entries leave at once');
+    assert.equal(h.walls.message(), '', label);
+    if (action === 'toggle') {
+      assert.deepEqual(h.record().stored, {}, label + ': nothing stored');
+      assert.deepEqual(h.idb.files(), [], label);
+      // Enable again: a cancelled download is not a failure, so it starts at once.
+      h.routes.set(jpg, { body: buffer(a.bytes.jpg) });
+      h.addons({ action: 'toggle', id: ID }); h.flush();
+      assert.equal(h.walls.stored('aw-a'), true, label + ': downloaded after Enable');
+      assert.equal(h.walls.stored('aw-b'), true, label);
+    } else {
+      const log = h.idb.log, at = log.indexOf('delete cleantv-wallpapers');
+      assert.ok(at >= 0, label + ': the database is deleted');
+      assert.ok(!log.slice(0, at).includes('readwrite files'), label + ': nothing is written before');
+      assert.equal(h.record(), null, label);
+    }
+  }
+  // An index request in flight is aborted as well and leaves no message.
+  const h = harness(), a = photo('aw-a');
+  h.bind(); h.install([a]);
+  h.routes.set(INDEX, 'hold'); h.clock.now += 60001; h.walls.picker(); h.flush();
+  const pending = h.xhrs.at(-1);
+  assert.equal(pending.url, INDEX);
+  h.addons({ action: 'toggle', id: ID }); h.flush();
+  assert.equal(pending.aborted, true, 'the index request is aborted');
+  assert.equal(h.walls.message(), '');
+  assert.deepEqual(h.remote(), []);
+});
+
+test('choosing another photo during a download stops it at once and does not hold it back', () => {
+  for (const hold of [true, false]) {
+    const label = hold ? 'request in flight' : 'between files';
+    const h = harness(), a = photo('aw-a'), b = photo('aw-b'), jpg = BASE + a.entry.files.jpg.path;
+    h.bind(); h.install([a, b]);
+    if (hold) h.routes.set(jpg, 'hold');
+    Object.assign(h.model, { wall: 'aw-a', shown: 'aw-a' }); h.walls.sync();
+    const pending = () => h.xhrs.find(x => x.url === jpg);
+    // In flight: the request is sent. Between files: its answer has arrived, the next file is not requested yet.
+    h.until(() => pending() && (hold ? pending().sent : pending().status === 200));
+    h.set({ wall: 'aw-b', shown: 'aw-b' });
+    if (hold) assert.equal(pending().aborted, true, label + ': aborted');
+    assert.deepEqual(h.requests().filter(u => u.includes('/generated/aw-a/')), [jpg], label + ': no further file of the old photo');
+    assert.equal(h.walls.stored('aw-b'), true, label + ': the new photo is stored');
+    assert.deepEqual(h.idb.files(), ROLES.map(role => 'aw-b/' + role).sort(), label);
+    assert.equal(h.walls.message(), '', label);
+    // Chosen again at once: no ten-minute wait, because a cancel is not a failure.
+    h.routes.set(jpg, { body: buffer(a.bytes.jpg) });
+    h.set({ wall: 'aw-a', shown: 'aw-a' });
+    assert.equal(h.walls.stored('aw-a'), true, label + ': downloaded again without waiting');
+  }
 });
 
 test('a reload keeps the add-on entries before Home starts and needs no network for a stored photo', () => {

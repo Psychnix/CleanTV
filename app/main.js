@@ -757,19 +757,41 @@
     });
   }
   /* In List both columns sit right of the app list: the text and clock cards (#addonWidgets, addons.js)
-     move directly below visible host widgets, so the two never overlap. Without host widgets, or in
-     Dock (cards end before x 1000), they keep their own place and nothing is measured. */
+     move directly below visible host widgets, so the two never overlap. Cards that would then reach the
+     Home controls, the compact Spotify player or the bottom 32px are left out, from the last one, until
+     there is room. addons.js builds the cards again on every render, so the flags are set each time and
+     only changes are written. Without host widgets, or in Dock (cards end before x 1000), they keep their
+     own place and nothing is measured. */
   function placeAddonCards() {
-    var cards = document.getElementById('addonWidgets'), below = '', height;
+    var cards = document.getElementById('addonWidgets'), below = '', list, left, right, limit, out, height, i;
     if (!cards) return;
     if (S.c.layout === 'list' && !cards.hidden && cards.firstChild && !widgetSlot.hidden && Object.keys(widgets).length) {
       height = widgetSlot.offsetHeight;
-      if (height) below = widgetSlot.offsetTop + height + 'px';
+      if (height) below = widgetSlot.offsetTop + height;
     }
-    if (cards._below === below) return;
-    cards._below = below;
-    cards.className = below ? 'is-below-widgets' : '';
-    cards.style.top = below;
+    if (cards._below !== below) {
+      cards._below = below;
+      cards.className = below ? 'is-below-widgets' : '';
+      cards.style.top = below ? below + 'px' : '';
+    }
+    list = cards.children;
+    for (i = 0; i < list.length; i++) if (list[i].hidden) list[i].hidden = false;
+    if (!below) return;
+    left = cards.offsetLeft; right = left + cards.offsetWidth;
+    limit = roomAbove(utilsEl, 0, 0, left, right, below, 1048);
+    limit = roomAbove($('spotifyCompact'), spotifyEl.offsetLeft, spotifyEl.offsetTop, left, right, below, limit);
+    // The first cards keep their stored order; from the first one that would pass the limit, none is shown.
+    for (i = 0; i < list.length; i++) {
+      out = out || below + list[i].offsetTop + list[i].offsetHeight > limit;
+      if (out) list[i].hidden = true;
+    }
+  }
+  /* The lowest bottom edge a card in the column left..right may have: 16px above el (at x, y plus its
+     offsets) when el is shown, shares the column's x range and reaches below `below`. Controls above
+     the column and a hidden player (it has no size) change nothing. */
+  function roomAbove(el, x, y, left, right, below, limit) {
+    x += el.offsetLeft; y += el.offsetTop;
+    return el.offsetWidth && x < right && left < x + el.offsetWidth && y + el.offsetHeight > below ? Math.min(limit, y - 16) : limit;
   }
 
   /* ---------- Home (browse) ---------- */
