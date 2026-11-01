@@ -17,7 +17,7 @@ try {
     if(req.action==='remove')delete __addons.installed[req.id];
     if(req.action==='toggle')__addons.installed[req.id].enabled=!__addons.installed[req.id].enabled;
     __addons.busy=false;window.dispatchEvent(new CustomEvent('cleanframe:addons',{detail:structuredClone(__addons)}));},30);return '{"ok":true}';}};
-  localStorage.setItem('cleanframe.home.v1',JSON.stringify({language:'de',bg:'photo',wall:'summit',home:['youtube']}));
+  localStorage.setItem('cleantv.home.v1',JSON.stringify({language:'de',bg:'photo',wall:'summit',home:['youtube']}));
  });
  await page.goto(preview.baseURL+'/home/');await page.waitForFunction(()=>ShoreQA.ready());
  const act=a=>page.evaluate(a=>ShoreQA.activate(a),a);
@@ -56,12 +56,12 @@ try {
  await page.evaluate(()=>{const c=__addons.catalog.find(p=>p.id==='apple-remote');c.version='0.1.0';c.versionCode=1;window.dispatchEvent(new CustomEvent('cleanframe:addons',{detail:structuredClone(__addons)}));});
  assert.equal(await page.locator('[data-action="addon.install.apple-remote"]').count(),0);
  // Update-all updates installed packages only and retains per-package choices and normal preferences.
- const prefs=await page.evaluate(()=>localStorage.getItem('cleanframe.home.v1'));
+ const prefs=await page.evaluate(()=>localStorage.getItem('cleantv.home.v1'));
  await page.evaluate(()=>{__addons.catalog.find(p=>p.id==='note').version='1.1.0';__addons.catalog.find(p=>p.id==='spotify').version='1.1.0';__addons.installed.note.enabled=false;__addons.installed.note.customSetting='keep';window.dispatchEvent(new CustomEvent('cleanframe:addons',{detail:structuredClone(__addons)}));});
  await page.keyboard.press('Escape');assert.equal(await page.locator('[data-action="addon.updateAll"]').textContent(),'Alle aktualisieren (2)');await act('addon.updateAll');await ready();
  assert.equal(await page.evaluate(()=>__addons.installed.note.enabled),false);assert.equal(await page.evaluate(()=>__addons.installed.note.customSetting),'keep');
  assert.equal(await page.evaluate(()=>__addons.installed.spotify.version),'1.1.0');assert.equal(await page.locator('.addon-update-dot').count(),0);
- assert.equal(await page.evaluate(()=>localStorage.getItem('cleanframe.home.v1')),prefs);
+ assert.equal(await page.evaluate(()=>localStorage.getItem('cleantv.home.v1')),prefs);
  assert.match(await page.locator('#appearanceStatus').textContent(),/2\/2/);
  // Status events keep the selected package and scroll position, even in a longer catalog.
  await page.evaluate(()=>{for(let i=0;i<12;i++)__addons.catalog.push({id:'test-'+i,name:'Test extension '+i,version:'1.0.0',kind:'text',description:'A long descriptive title for an extension that must remain inside its card.'});window.dispatchEvent(new CustomEvent('cleanframe:addons',{detail:structuredClone(__addons)}));});

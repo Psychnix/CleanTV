@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   function noop() {}
-  var api = window.CleanFrameLegacy = { active: false, apply: noop, setVar: noop, removeVar: noop };
+  var api = window.CleanTVLegacy = { active: false, apply: noop, setVar: noop, removeVar: noop };
   function has(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
   function trim(s) { return s.trim(); }
 
@@ -401,7 +401,7 @@
 
   var native = false;
   try { native = !!(window.CSS && window.CSS.supports && window.CSS.supports('--a', '0')); } catch (e) { native = false; }
-  if (native && !/[?&]legacy=1(?:&|$)/.test(window.location && window.location.search || '') && window.CleanFrameForceLegacy !== true) return;
+  if (native && !/[?&]legacy=1(?:&|$)/.test(window.location && window.location.search || '') && window.CleanTVForceLegacy !== true) return;
 
   /* ---------- Legacy engine only ---------- */
   api.active = true;

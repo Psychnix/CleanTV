@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 
 const source = readFileSync(new URL('../app/legacy.js', import.meta.url), 'utf8');
-function load(window, extra = {}) { vm.runInNewContext(source, { window, ...extra }); return window.CleanFrameLegacy; }
+function load(window, extra = {}) { vm.runInNewContext(source, { window, ...extra }); return window.CleanTVLegacy; }
 const L = load({ CSS: { supports: () => true }, location: { search: '' } });
 const I = L._internals;
 const DEFS = [{ key: 'root', tokens: [':root', 'html'] }, { key: 'stage', tokens: ['#stage', '.stage'] }, { key: 'home', tokens: ['#home', '.home'] }, { key: 'sheet', tokens: ['#sheet', '.sheet'] }, { key: 'dock', tokens: ['#dock', '.dock'] }];
@@ -44,7 +44,7 @@ test('inactive engines get a no-op API without XHR, DOM changes or polyfills', (
   const api = load(window);
   assert.equal(api.active, false);
   for (const name of ['apply', 'setVar', 'removeVar']) assert.equal(api[name]({ style: {} }, '--x', '1'), undefined);
-  assert.deepEqual(touched.filter(k => !['CleanFrameLegacy', 'CleanFrameForceLegacy'].includes(k)), []);
+  assert.deepEqual(touched.filter(k => !['CleanTVLegacy', 'CleanTVForceLegacy'].includes(k)), []);
 });
 
 test('a failing start shows the error on screen and never hides the stage', () => {
@@ -66,7 +66,7 @@ test('a failing start shows the error on screen and never hides the stage', () =
 });
 
 test('forced activation works where custom properties exist', () => {
-  for (const window of [{ location: { search: '?a=1&legacy=1' } }, { CleanFrameForceLegacy: true, location: { search: '' } }]) {
+  for (const window of [{ location: { search: '?a=1&legacy=1' } }, { CleanTVForceLegacy: true, location: { search: '' } }]) {
     window.CSS = { supports: () => true }; window.addEventListener = () => {};
     const document = { getElementsByTagName: () => [], createElement: () => ({ style: {}, setAttribute() {} }), documentElement: { appendChild() {} }, addEventListener() {} };
     assert.equal(load(window, { document, setTimeout, clearTimeout, Date }).active, true);

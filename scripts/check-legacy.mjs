@@ -22,7 +22,7 @@ const PSEUDO = ['content', 'opacity', 'background-color', 'background-image', 'b
 function expected(prop, rec) { return prop === 'font-feature-settings' && rec[prop] === 'normal' && /tabular-nums/.test(rec['font-variant-numeric']) ? '"tnum"' : rec[prop]; }
 
 function harness({ catalog, seed, adaptive }) {
-  if (!sessionStorage.getItem('__seeded')) { localStorage.setItem('cleanframe.home.v1', JSON.stringify(seed)); sessionStorage.setItem('__seeded', '1'); }
+  if (!sessionStorage.getItem('__seeded')) { localStorage.setItem('cleantv.home.v1', JSON.stringify(seed)); sessionStorage.setItem('__seeded', '1'); }
   // Legacy engines run without adaptive ink, so the main pass compares both renderings without it.
   if (!adaptive) Object.defineProperty(window, 'CleanFrameAdaptiveInk', { configurable: true, get: () => ({}), set: () => {} });
   // A fixed wall clock keeps clock and date widths identical; timers keep the real Date.now.
@@ -67,7 +67,7 @@ function snapshot({ props, pseudo }) {
 // The real old-engine path in this browser: CSS.supports reports no custom properties, so legacy.js,
 // main.js and device.js take their Chromium 47 branches, against a synthetic 2017 TV.
 function oldEngine({ installed, model, seed, tabular, hide }) {
-  if (seed && !sessionStorage.getItem('__seeded')) { localStorage.setItem('cleanframe.home.v1', JSON.stringify(seed)); sessionStorage.setItem('__seeded', '1'); }
+  if (seed && !sessionStorage.getItem('__seeded')) { localStorage.setItem('cleantv.home.v1', JSON.stringify(seed)); sessionStorage.setItem('__seeded', '1'); }
   const supports = CSS.supports.bind(CSS);
   CSS.supports = function (a) { return a === '--a' ? false : supports.apply(CSS, arguments); };
   delete Intl.DateTimeFormat.prototype.formatToParts;
@@ -146,7 +146,7 @@ const SYNTHETIC = [
   { name: 'var() in @keyframes', css: ':root{--o:.5}.home{--o:.2}@keyframes k{from{opacity:var(--o)}to{opacity:var(--o)}}.x{animation:k 1s paused}', props: ['opacity'], reported: 'note' }
 ];
 function synthetic([c, html]) {
-  const I = window.CleanFrameLegacy._internals, props = c.props || ['color'];
+  const I = window.CleanTVLegacy._internals, props = c.props || ['color'];
   document.body.innerHTML = html;
   for (const id in c.classes || {}) document.getElementById(id).className = c.classes[id];
   for (const id in c.inline || {}) for (const k in c.inline[id]) document.getElementById(id).style.setProperty(k, c.inline[id][k]);
@@ -213,7 +213,8 @@ state('German photo dock', look({ language: 'de', wall: 'golden' }), [['nav', 'u
 state('German light list', look({ language: 'de', bg: 'light', layout: 'list' }));
 state('Settings overview, photo', look({ wall: 'bridge' }), [['scene', 'settings']]);
 state('Settings overview, light, German', look({ bg: 'light', language: 'de' }), [['scene', 'settings'], ['nav', 'down']]);
-for (const g of ['background', 'layout', 'typography', 'focus', 'clock', 'language', 'samsung']) state('Settings ' + g + ' detail, photo', look({ wall: 'peaks' }), [['scene', 'settings'], ['act', 'settings.group.' + g]]);
+for (const g of ['background', 'layout', 'typography', 'focus', 'clock', 'addons', 'language', 'samsung']) state('Settings ' + g + ' detail, photo', look({ wall: 'peaks' }), [['scene', 'settings'], ['act', 'settings.group.' + g]]);
+state('Settings add-ons discover, light, German', look({ bg: 'light', language: 'de' }), [['scene', 'settings'], ['act', 'settings.group.addons'], ['act', 'addon.tab.discover']]);
 state('Settings layout detail, dark list', look({ bg: 'dark', layout: 'list' }), [['scene', 'settings'], ['act', 'settings.group.layout'], ['nav', 'down']]);
 state('Settings focus detail, light type', look({ bg: 'light', focus: 'type' }), [['scene', 'settings'], ['act', 'settings.group.focus']]);
 state('Wallpaper picker', look({ wall: 'summit' }), [['scene', 'settings'], ['act', 'settings.group.background'], ['act', 'background.wallpaper']]);
@@ -297,7 +298,7 @@ function compare(name, a, b, quiet) {
 }
 async function sheetFacts(page) {
   return page.evaluate(() => {
-    const L = window.CleanFrameLegacy, style = document.getElementById('legacyResolved'), link = document.querySelector('link[href="style.css"]');
+    const L = window.CleanTVLegacy, style = document.getElementById('legacyResolved'), link = document.querySelector('link[href="style.css"]');
     const cssom = style ? Array.from(style.sheet.cssRules).map(r => r.cssText).join('\n') : '';
     return { active: L.active, style: !!style, textVar: style ? /var\(/i.test(style.textContent) : null, cssomVar: /var\(/i.test(cssom), current: L._internals.text ? /var\(/i.test(L._internals.text()) : null,
       linkDisabled: link.disabled, boot: !!document.getElementById('legacyBoot'), overlay: document.getElementById('legacyErrors') ? document.getElementById('legacyErrors').textContent : null,
@@ -403,7 +404,7 @@ try {
 
   // apply() cost in this browser, then with 6x CPU throttling as a rough stand-in for a 2017 TV.
   const timing = async () => legacy.evaluate(() => {
-    const L = window.CleanFrameLegacy, stage = document.getElementById('stage'), dock = document.getElementById('dock'), n = 200, out = {};
+    const L = window.CleanTVLegacy, stage = document.getElementById('stage'), dock = document.getElementById('dock'), n = 200, out = {};
     let t = performance.now(); for (let i = 0; i < n; i++) L.apply(); out.noChange = (performance.now() - t) / n;
     t = performance.now(); for (let i = 0; i < n; i++) { stage.classList.toggle('qa-probe'); L.apply(); } out.irrelevantClass = (performance.now() - t) / n;
     t = performance.now(); for (let i = 0; i < 40; i++) { L.setVar(dock, '--tile-w', (200 + i) + 'px'); L.apply(); } out.dockVar = (performance.now() - t) / 40;
@@ -450,7 +451,7 @@ try {
     // Each static face must decode in this engine; the variable face keeps its weight range.
     const statics = Array.from(document.fonts).filter(f => f.family.replace(/"/g, '') === 'Manrope' && /^\d+$/.test(f.weight));
     await Promise.all(statics.map(f => f.load().catch(() => null)));
-    return { active: CleanFrameLegacy.active, resolved: !!document.getElementById('legacyResolved'), overlay: (document.getElementById('legacyErrors') || {}).textContent || '',
+    return { active: CleanTVLegacy.active, resolved: !!document.getElementById('legacyResolved'), overlay: (document.getElementById('legacyErrors') || {}).textContent || '',
       faces: statics.filter(f => f.status === 'loaded').map(f => f.weight).sort(),
       state: ShoreQA.state(), actions: ShoreQA.actions(), cell: document.querySelector('.clock-digit') ? getComputedStyle(document.querySelector('.clock-digit')).width : 'none',
       date: document.querySelector('#caption .clock-date').textContent, caps: FrameDevice.capabilities };
@@ -483,7 +484,7 @@ try {
   check('All apps lists one Netflix and maps alternative IDs to brands', catalog.filter(id => id === 'netflix').length === 1 && !catalog.includes('RN1MCdNq8t.Netflix') && catalog.includes('appletv') && catalog.includes('primevideo'), catalog);
   const cell = boot.cell;
   page = await openOld({ seed: { look: { font: 'geist', material: 'tint', bg: 'photo', layout: 'dock', focus: 'glass', wall: 'misty' }, home: ['netflix', 'stremio'], mode: 'fixed' } });
-  const saved = await page.evaluate(() => ({ c: ShoreQA.state().committed, stored: JSON.parse(localStorage.getItem('cleanframe.home.v1')).look }));
+  const saved = await page.evaluate(() => ({ c: ShoreQA.state().committed, stored: JSON.parse(localStorage.getItem('cleantv.home.v1')).look }));
   check('saved Geist and Clear tint fall back to Manrope and Soft', saved.c.font === 'manrope' && saved.c.material === 'soft' && saved.stored.font === 'manrope', saved);
   check('a saved Home keeps its apps', JSON.stringify(saved.c.home) === '["netflix","stremio"]', saved.c.home);
   page = await openOld({ installed: MU6179.concat('com.samsung.tv.csfs'), model: 'UE55LS003AUXXU' });

@@ -18,7 +18,16 @@
     'Playback, account and widget appearance': 'Wiedergabe, Konto und Widget Darstellung',
     'Native service': 'Nativer Dienst', 'Home widget': 'Widget auf dem Startbildschirm',
     'Choose an extension': 'Erweiterung auswählen', 'Manage extension': 'Erweiterung verwalten',
-    'Android will ask you to confirm removal. Pairings stored by this add-on are removed.': 'Android fragt vor dem Entfernen nach. Gespeicherte Kopplungen dieser Erweiterung werden gelöscht.'
+    'Android will ask you to confirm removal. Pairings stored by this add-on are removed.': 'Android fragt vor dem Entfernen nach. Gespeicherte Kopplungen dieser Erweiterung werden gelöscht.',
+    'No add-ons for this TV yet': 'Noch keine Add-ons für diesen TV', 'Catalog checked · {total} entries · {compatible} for this TV': 'Katalog geprüft · {total} Einträge · {compatible} für diesen TV',
+    'Catalog download failed (no connection, certificate or access policy).': 'Der Katalog konnte nicht geladen werden (keine Verbindung, Zertifikat oder Zugriffsregel).',
+    'Catalog download timed out.': 'Das Laden des Katalogs hat zu lange gedauert.', 'Catalog download failed (unexpected address).': 'Der Katalog kam von einer unerwarteten Adresse.',
+    'Catalog could not be read.': 'Der Katalog konnte nicht gelesen werden.', 'Downloads follow in a later update.': 'Downloads folgen in einem späteren Update.',
+    'Another add-on operation is running.': 'Ein anderer Add-on Vorgang läuft noch.', 'Package exceeds size limit.': 'Das Paket ist zu groß.',
+    'Unsupported catalog API.': 'Nicht unterstützte Katalog API.', 'Catalog is too large.': 'Der Katalog ist zu groß.', 'Duplicate add-on ID.': 'Doppelte Add-on ID.',
+    'Unsupported package identity or API.': 'Nicht unterstützte Paketkennung oder API.', 'Unsupported widget kind.': 'Nicht unterstützte Widget Art.',
+    'Invalid package metadata.': 'Ungültige Paketangaben.', 'Widget text is too long.': 'Der Widget Text ist zu lang.', 'Unsupported time zone.': 'Nicht unterstützte Zeitzone.',
+    'Invalid package path.': 'Ungültiger Paketpfad.', 'Invalid package checksum.': 'Ungültige Paketprüfsumme.'
   };
   function installedVersion(item, runtime) {
     var result = {}, actual = runtime && runtime[item.id];
@@ -41,7 +50,11 @@
     return value.catalog.filter(function (item) { var current = value.installed[item.id]; return current && newer(item, installedVersion(current, value.runtime)); });
   }
   window.CleanFrameAddons = {
-    text: function (language, value) { return language === 'de' && de[value] ? de[value] : window.CleanFrameI18n.text(language, value); },
+    text: function (language, value) {
+      var http = language === 'de' && /^Catalog download failed \(HTTP ([0-9]{3})\)\.$/.exec(value);
+      if (http) return 'Der Katalog konnte nicht geladen werden (HTTP ' + http[1] + ').';
+      return language === 'de' && de[value] ? de[value] : window.CleanFrameI18n.text(language, value);
+    },
     state: read, newer: newer, installedVersion: installedVersion, updates: function (value) { return updates(value || state); },
     enabled: function (id) { return !!(state.installed[id] && state.installed[id].enabled !== false); },
     request: function (action, id) {
@@ -63,5 +76,8 @@
     }
   };
   read();
-  window.addEventListener('cleanframe:addons', function (event) { state = event.detail; });
+  window.addEventListener('cleanframe:addons', function (event) {
+    var detail = event.detail;
+    if (detail && detail.installed && typeof detail.installed === 'object' && Array.isArray(detail.catalog)) state = detail;
+  });
 }());

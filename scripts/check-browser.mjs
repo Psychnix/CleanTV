@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { openPreview, root } from './browser.mjs';
 
-const KEY = 'cleanframe.home.v1';
+const KEY = 'cleantv.home.v1';
 const PRIMARY = ['stremio', 'netflix', 'disneyplus', 'youtube', 'appletv', 'primevideo', 'abciview', 'sbs', 'applemusic'];
 const IDS = ['IkWsFHtOY9.Stremio', 'org.tizen.netflix-app', 'MCmYXNxgcu.DisneyPlus', '9Ur5IzDKqV.TizenYouTube', 'com.samsung.tv.aria-video', 'org.tizen.primevideo', 'mWK87Xghap.ABCiview', 'OyE7OuxlUi.SBSOnDemand', 'org.tizen.apple.apple-music'];
 const NAMES = ['Stremio', 'Netflix', 'Disney+', 'YouTube', 'Apple TV', 'Prime Video', 'ABC iview', 'SBS On Demand', 'Apple Music'];
@@ -42,9 +42,10 @@ async function run(name, fn) {
 async function closePage() { if (current) { current.__closing = true; await current.close(); current = null; } }
 
 // Production still calls its unmodified device.js adapter.
-function installHarness({ seed, legacy, mock, catalog, minuteMs, catalogFailure, noFontAPI, storageFailure, currentAppId, initiallyHidden, pauseHiddenFrames, rejectDecode }) {
+function installHarness({ seed, previous, legacy, mock, catalog, minuteMs, catalogFailure, noFontAPI, storageFailure, currentAppId, initiallyHidden, pauseHiddenFrames, rejectDecode }) {
   if (!sessionStorage.getItem('__cleanframe_seeded')) {
-    if (seed !== undefined) localStorage.setItem('cleanframe.home.v1', typeof seed === 'string' ? seed : JSON.stringify(seed));
+    if (seed !== undefined) localStorage.setItem('cleantv.home.v1', typeof seed === 'string' ? seed : JSON.stringify(seed));
+    if (previous !== undefined) localStorage.setItem('cleanframe.home.v1', typeof previous === 'string' ? previous : JSON.stringify(previous));
     if (legacy !== undefined) localStorage.setItem('cleanframe.shore.v1', typeof legacy === 'string' ? legacy : JSON.stringify(legacy));
     sessionStorage.setItem('__cleanframe_seeded', '1');
   }
@@ -53,8 +54,8 @@ function installHarness({ seed, legacy, mock, catalog, minuteMs, catalogFailure,
   window.__storageAttempts = 0;
   const set = Storage.prototype.setItem;
   Storage.prototype.setItem = function (key, value) {
-    if (key === 'cleanframe.home.v1') window.__storageAttempts++;
-    if (window.__failWrites && key === 'cleanframe.home.v1') throw new DOMException('QA storage failure', 'QuotaExceededError');
+    if (key === 'cleantv.home.v1') window.__storageAttempts++;
+    if (window.__failWrites && key === 'cleantv.home.v1') throw new DOMException('QA storage failure', 'QuotaExceededError');
     return set.call(this, key, value);
   };
   const queuedFrames = new Map(), requestFrame = window.requestAnimationFrame.bind(window), cancelFrame = window.cancelAnimationFrame.bind(window);
@@ -107,6 +108,8 @@ async function page(options = {}, setup) {
   current.__expectedFailures = expected;
   current.on('pageerror', error => report.pageErrors.push({ section, error: error.message }));
   current.on('response', response => { if (response.status() >= 400 && !expected.some(s => response.url().includes(s))) report.pageErrors.push({ section, status: response.status(), url: response.url() }); });
+  // The Tizen add-on host contacts the catalog only after an explicit refresh.
+  current.on('request', request => { if (/^https:\/\/raw\.githubusercontent\.com\//.test(request.url()) && !owner.__allowCatalog) report.pageErrors.push({ section, unexpectedCatalogRequest: request.url() }); });
   current.on('requestfailed', request => {
     if (owner.__closing) return;
     const failure = { section, url: request.url(), error: request.failure()?.errorText };
@@ -135,7 +138,7 @@ async function group(name) {
 const settingsSnapshot = () => current.evaluate(() => {
   const s = ShoreQA.state();
   const rendered = [...document.getElementById('stage').classList].filter(c => /^(bg|l|a|u|f|m|font)-/.test(c)).sort();
-  return { stored: localStorage.getItem('cleanframe.home.v1'), committed: s.committed, shown: s.shown, rendered, writes: s.writes, storageAttempts: window.__storageAttempts };
+  return { stored: localStorage.getItem('cleantv.home.v1'), committed: s.committed, shown: s.shown, rendered, writes: s.writes, storageAttempts: window.__storageAttempts };
 });
 const choice = (axis, value) => act('choice.' + axis + '.' + value);
 const radios = () => current.evaluate(() => [...document.querySelectorAll('#stage [role="radio"]')].filter(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden').map(e => ({ action: e.getAttribute('data-action'), checked: e.getAttribute('aria-checked'), disabled: e.getAttribute('aria-disabled') === 'true', focused: e.classList.contains('is-focus'), text: e.textContent.trim() })));
@@ -179,7 +182,7 @@ const wallpaperRowVisible = id => current.waitForFunction(expected => {
 const wallpaperSaved = () => current.evaluate(() => {
   const s = ShoreQA.state(), bg = document.getElementById('sheetBg'), veil = document.querySelector('.sheet-veil');
   const bgStyle = getComputedStyle(bg), veilStyle = getComputedStyle(veil);
-  return { stored: localStorage.getItem('cleanframe.home.v1'), committed: s.committed, writes: s.writes, attempts: window.__storageAttempts,
+  return { stored: localStorage.getItem('cleantv.home.v1'), committed: s.committed, writes: s.writes, attempts: window.__storageAttempts,
     backdrop: { src: bg.currentSrc || bg.src, opacity: bgStyle.opacity, filter: bgStyle.filter, veil: veilStyle.background, veilOpacity: veilStyle.opacity } };
 });
 const wallpaperApplied = () => current.locator('.wallpaper-choice[aria-checked="true"]').evaluateAll(elements => elements.map(e => e.getAttribute('data-action')));
@@ -228,6 +231,14 @@ try {
     check('Next completed edit writes stable home key', (await stored()).dock[0] === 'netflix');
     await current.reload(); await ready();
     check('Migrated preferences survive reload', (await state()).look.controls === 'text' && (await state()).dock[0] === 'netflix');
+    await closePage();
+    const previous = baseline({ theme: 'list', dock: ['youtube'], lastApp: 'youtube' });
+    await page({ seed: undefined, previous });
+    check('Previous cleanframe.home.v1 key is read', same((await state()).dock, ['youtube']) && (await state()).look.layout === 'list');
+    await look({ controls: 'text' });
+    check('Next edit writes cleantv.home.v1 and keeps the previous key', (await stored()).dock[0] === 'youtube' && await current.evaluate(text => localStorage.getItem('cleanframe.home.v1') === text, JSON.stringify(previous)));
+    await current.reload(); await ready();
+    check('Preferences migrated from cleanframe.home.v1 survive reload', (await state()).look.controls === 'text' && (await state()).dock[0] === 'youtube');
   });
   await run('Invalid preferences and saved native pins', async () => {
     await page({ seed: '{broken', legacy: baseline({ dock: ['netflix'], lastApp: 'netflix' }) });
@@ -387,7 +398,7 @@ try {
         const scale = document.getElementById('stage').getBoundingClientRect().width / 1920;
         return elements.map(e => (e.querySelector('.ico').getBoundingClientRect().left - e.querySelector('.settings-group-copy').getBoundingClientRect().right) / scale);
       });
-      check('Settings group arrows stay separate from their copy at ' + width, groups.length === 8 && groups.every(gap => gap >= 31.5), groups);
+      check('Settings group arrows stay separate from their copy at ' + width, groups.length === 9 && groups.every(gap => gap >= 31.5), groups);
       await wallpaper();
       const caption = await current.locator('.wallpaper-preview-name').evaluate(e => {
         const scale = document.getElementById('stage').getBoundingClientRect().width / 1920;
@@ -568,6 +579,35 @@ try {
     await group('samsung');
     const samsungActions = await call('actions');
     check('Samsung group shows both native actions', samsungActions.includes('samsung.home') && samsungActions.includes('samsung.settings'));
+  });
+  await run('Tizen add-on catalog is read only on request', async () => {
+    const URL = 'https://raw.githubusercontent.com/AntoinS/cleanframe-addons/main/catalog-v2.json', sha = 'a'.repeat(64);
+    const entry = (id, extra) => ({ api: 1, id, name: 'Note ' + id, version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'Hello', path: 'packages/' + id + '/1.0.0.json', sha256: sha, ...extra });
+    const upstream = [{ api: 1, id: 'spotify', name: 'Spotify', version: '1.0.0', kind: 'spotify', description: 'Player', author: 'QA', license: 'MIT', path: 'packages/spotify/1.0.0.json', sha256: sha },
+      { api: 2, id: 'apple-remote', name: 'iPhone Remote', version: '0.1.2', kind: 'native', description: 'Remote', author: 'QA', license: 'MIT', sha256: sha }];
+    let body = { api: 2, addons: upstream }, requests = 0, fail = false;
+    const serve = async p => p.route(URL, route => { requests++; return fail ? route.abort() : route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) }); });
+    await page({}, serve);
+    check('Startup sends no catalog request', requests === 0);
+    await scene('settings');
+    check('Settings lists Add-ons when the TV host exists', (await call('actions')).includes('settings.group.addons'));
+    current.__allowCatalog = true;
+    await act('settings.group.addons'); await act('addon.tab.discover');
+    check('Discover before a refresh asks for one', /Refresh the catalog/.test(await current.locator('#addonEmpty').textContent()) && requests === 0);
+    await act('addon.refresh');
+    await current.waitForFunction(() => /Catalog checked/.test(document.getElementById('addonEmpty')?.textContent || ''));
+    check('Refresh reports the checked catalog without Android entries', requests === 1 && /Catalog checked · 2 entries · 0 for this TV/.test(await current.locator('#addonEmpty').textContent()) && !(await call('actions')).some(a => /^addon\.details\.(spotify|apple-remote)$/.test(a)));
+    body = { api: 2, addons: upstream.concat([entry('note')]) };
+    await act('addon.refresh');
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.details.note"]'));
+    await act('addon.details.note');
+    const actions = await call('actions');
+    check('A compatible widget is shown read-only without Download', !actions.some(a => /^addon\.(install|setup|toggle|remove)\./.test(a)) && !actions.includes('group.spotify'), actions);
+    await nav('back');
+    fail = true; current.__expectedFailures.push('raw.githubusercontent.com');
+    await act('addon.refresh');
+    await current.waitForFunction(() => /could not be loaded|no connection/.test(document.getElementById('appearanceStatus')?.textContent || ''));
+    check('A failed refresh keeps the last catalog and names the cause', !!(await current.$('[data-action="addon.details.note"]')) && /no connection, certificate or access policy/.test(await current.locator('#appearanceStatus').textContent()));
   });
   await run('Settings focus never changes the applied Home', async () => {
     await page();

@@ -1,7 +1,7 @@
 (function () {
   'use strict';
   var api = window.CleanFramePair, digits = [0, 0, 0, 0], submitted = false, language = 'de';
-  try { language = JSON.parse(localStorage.getItem('cleanframe.home.v1') || '{}').language || 'de'; } catch (ignore) { /* Default language. */ }
+  try { language = JSON.parse(localStorage.getItem('cleantv.home.v1') || localStorage.getItem('cleanframe.home.v1') || '{}').language || 'de'; } catch (ignore) { /* Default language. */ }
   function tr(de, en) { return language === 'de' ? de : en; }
   function el(id) { return document.getElementById(id); }
   el('title').textContent = tr('Fernseher verbinden', 'Connect television');

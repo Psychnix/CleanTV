@@ -11,6 +11,12 @@ Third-party text and clock widgets are rendered as textContent using host templa
 Management is available at Settings → Add-ons on the TV. The Mac preview can show the layout; a normal browser has no native download/storage access and reports that honestly. Tests use an explicit synthetic adapter, never real account credentials.
 
 
+## Samsung (Tizen) host
+
+The Tizen build reads the same reviewed `catalog-v2.json` in `app/tizen-addons.js`. `app/config.xml` grants the public `internet` privilege and a single `<access origin="https://raw.githubusercontent.com" subdomains="false"/>`; `scripts/check.py` keeps it that way and rejects CSP or navigation elements, which would switch the Tizen runtime to CSP mode and block the inline styles that `legacy.js` inserts. The catalog is requested only when Refresh catalog is pressed, never at startup. A request is a plain GET without custom headers, limited to 128 KiB and 15 seconds; redirects to another address, non-200 responses, invalid UTF-8 or JSON, and any invalid text or clock entry keep the previous catalog. Spotify and native entries need Android, and a clock whose time zone this TV engine cannot format (Chromium 47 knows fewer zone names than Android) is skipped: these count toward the catalog limits but are not offered. Only the host's own error messages are shown.
+
+This first stage is read-only: Settings → Add-ons shows the compatible entries and the result of the last check (`catalogInfo`), but nothing is downloaded, installed or stored. Installed widgets will use separate `cleantv.addons.v1.a`/`.b` storage slots in a later stage.
+
 ## Native packages
 
 The initial native package is `com.cleanframe.addon.appleremote`, interface 1, version 0.1.0. Catalog metadata must include API 2, native kind, exact package/version/code, minimum host, immutable release APK URL, SHA-256 and signing-certificate SHA-256. Download origins are restricted to the approved public repository and GitHub release-asset redirects. The host verifies the archive before creating an Android PackageInstaller session. Android owns confirmation; cancellation leaves the previous installation intact. Downloads are bounded and canceled when the owning manager closes. Pending committed operations are durable and reconciled with PackageManager after callbacks/resume.

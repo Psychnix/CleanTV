@@ -5,7 +5,7 @@
   /* Engines without custom properties (2017 Tizen 3.0 TVs) receive the values through legacy.js.
      OLD is such an engine itself, not the resolver forced on a modern one for checks: it also lacks
      variable fonts and size-adjust and has an older compositor, so it gets fewer Home options. */
-  var LEGACY = window.CleanFrameLegacy && window.CleanFrameLegacy.active ? window.CleanFrameLegacy : null;
+  var LEGACY = window.CleanTVLegacy && window.CleanTVLegacy.active ? window.CleanTVLegacy : null;
   var OLD = !!LEGACY && !(window.CSS && window.CSS.supports && window.CSS.supports('--a', '0'));
   var CAPS = window.FrameDevice && window.FrameDevice.capabilities || {};
   var ADDONS = window.CleanFrameAddons;
@@ -52,7 +52,7 @@
     { id: '5', name: 'Every 5 minutes', min: 5 }, { id: '15', name: 'Every 15 minutes', min: 15 },
     { id: '60', name: 'Every hour', min: 60 }
   ];
-  var KEY = 'cleanframe.home.v1', storageOk = true, catalog = { loading: false, loaded: false, error: null, request: 0, revision: 0 };
+  var KEY = 'cleantv.home.v1', storageOk = true, catalog = { loading: false, loaded: false, error: null, request: 0, revision: 0 };
   var QA = window.ShoreQA = { minuteMs: window.ShoreQA && window.ShoreQA.minuteMs || 60000 };
   var FONTS = {
     manrope: { name: 'Manrope', family: 'Manrope', display: 600, ui: 500, clock: 500 },
@@ -353,7 +353,8 @@
   function safeId(id) { return typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,160}$/.test(id) && ['constructor', 'prototype', '__proto__'].indexOf(id) < 0; }
   function safeIcon(path) { return typeof path === 'string' && path.length < 2048 && /^(?:\/[^\/]|file:\/\/\/|wgt-package:\/\/\/)/.test(path) ? path : ''; }
   function load() {
-    var keys = [KEY, 'cleanframe.shore.v1'], raw, saved, i;
+    // Earlier builds saved under cleanframe.*; reading them migrates the preferences on the next save.
+    var keys = [KEY, 'cleanframe.home.v1', 'cleanframe.shore.v1'], raw, saved, i;
     for (i = 0; i < keys.length; i++) {
       try {
         raw = localStorage.getItem(keys[i]);
@@ -888,9 +889,10 @@
       { id: 'focus', label: 'Focus', value: VALUE_NAMES[S.c.focus] },
       { id: 'editor', label: 'Apps on Home', value: S.c.home.length + ' apps' },
       { id: 'clock', label: 'Clock and date', value: S.c.dateVisible ? 'Time and date' : 'Time only' },
+      { id: 'addons', label: 'Add-ons', value: 'Widgets and extensions' },
       { id: 'language', label: 'Language', value: S.c.language === 'de' ? 'Deutsch' : 'English' },
       { id: 'samsung', label: DEVICE_LABEL, value: 'Home and TV settings' }
-    ].filter(function (r) { return r.id !== 'samsung' || CAPS.home !== false || CAPS.settings !== false; });
+    ].filter(function (r) { return r.id === 'addons' ? !!FrameDevice.addons : r.id !== 'samsung' || CAPS.home !== false || CAPS.settings !== false; });
     return [
       { id: 'display', label: 'Display', value: translate(VALUE_NAMES[S.c.bg]) + ' · ' + FONTS[S.c.font].name },
       { id: 'homescreen', label: 'Home screen', value: translate(VALUE_NAMES[S.c.layout]) + ' · ' + S.c.home.length + ' apps' },
@@ -1037,7 +1039,7 @@
     current = state.installed[item.id];
     state.catalog.some(function (entry) { if (entry.id === item.id) { candidate = entry; return true; } return false; });
     actions = [];
-    if (candidate && (!current || ADDONS.newer(candidate, ADDONS.installedVersion(current, state.runtime)))) actions.push({ action: 'addon.install.' + item.id, label: translate(current ? 'Update' : 'Download'), disabled: busy });
+    if (!state.readOnly && candidate && (!current || ADDONS.newer(candidate, ADDONS.installedVersion(current, state.runtime)))) actions.push({ action: 'addon.install.' + item.id, label: translate(current ? 'Update' : 'Download'), disabled: busy });
     if (current) {
       if (item.kind === 'native') actions.push({ action: 'addon.setup.' + item.id, label: addonText('Set up'), disabled: busy });
       else if (item.id === 'spotify') actions.push({ action: 'group.spotify', label: translate('Settings'), disabled: busy });
@@ -1769,7 +1771,8 @@
         return command(entry, '<span>' + esc(entry.label) + '</span>', section.tabs ? 'addon-tab' + (entry.active ? ' is-current' : '') : 'addon-action');
       }).join('') + '</div></section>';
     }).join('');
-    if (t.group === 'addons' && sections.length === 1) content += '<section id="addonEmpty" class="addon-empty"><h3>' + esc(addonText(t.addonTab === 'installed' ? 'No installed add-ons' : 'No catalog available')) + '</h3><p>' + esc(addonText(t.addonTab === 'installed' ? 'Find extensions in Discover.' : 'Refresh the catalog to see approved extensions.')) + '</p></section>';
+    var checked = t.addonTab === 'discover' && state.catalogInfo && state.catalogInfo.checked ? addonText('Catalog checked · {total} entries · {compatible} for this TV').replace('{total}', state.catalogInfo.total).replace('{compatible}', state.catalogInfo.compatible) : '';
+    if (t.group === 'addons' && sections.length === 1) content += '<section id="addonEmpty" class="addon-empty"><h3>' + esc(addonText(t.addonTab === 'installed' ? 'No installed add-ons' : checked ? 'No add-ons for this TV yet' : 'No catalog available')) + '</h3><p>' + esc(checked || addonText(t.addonTab === 'installed' ? 'Find extensions in Discover.' : 'Refresh the catalog to see approved extensions.')) + '</p></section>';
     if (ADDONS.updates(state).length) content += '<p class="addon-update-note">' + esc(addonText('Settings and pairings are retained. Android confirms each app update.')) + '</p>';
     if (item) {
       content += '<section id="addonMetadata" class="addon-metadata">' + value('Version', item.version || addonText('Not provided')) + (update ? value('Available version', update.version) : '') + (item.kind === 'native' && installed ? value('Activation', addonActivation(item)) : '') + value('Provider', item.author || item.provider || addonText('Not provided')) + value('License', item.license || addonText('Not provided')) + value('Permissions', Array.isArray(item.permissions) ? item.permissions.map(addonText).join(' · ') || addonText('No additional permissions') : item.permissions || addonText('Not provided')) + '</section>';
@@ -1779,14 +1782,15 @@
     appearanceRows.scrollTop = t.addonScroll !== undefined ? t.addonScroll : scrollTop;
     t.addonScroll = undefined;
     var selected = appearanceRows.querySelector('.is-focus');
-    if (selected) selected.scrollIntoView({ block: 'nearest' });
+    // Chromium before 61 reads the options object as true and aligns the row to the top.
+    if (selected) { if (selected.scrollIntoViewIfNeeded) selected.scrollIntoViewIfNeeded(false); else selected.scrollIntoView({ block: 'nearest' }); }
     var status = '';
     if (state.busy || batch.status === 'running' || state.pending && (state.pending.status === 'awaiting-confirmation' || state.pending.status === 'checking')) {
       status = '<p class="addon-progress">' + esc(batch.status === 'running' ? addonText('Updating add-ons') + ' · ' + batch.completed + '/' + batch.total + (batch.name ? ' · ' + batch.name : '') : translate('Working…'));
       if (state.pending && state.pending.status === 'awaiting-confirmation') status += ' · ' + esc(addonText('Confirm the operation in Android.'));
       status += '</p>';
     } else if (batch.status === 'complete' && batch.total) status = '<p class="addon-progress">' + esc(addonText('Updates completed') + ' · ' + batch.completed + '/' + batch.total) + '</p>';
-    if (state.error) status += '<p class="setting-error">' + esc(state.error) + '</p>';
+    if (state.error) status += '<p class="setting-error">' + esc(addonText(state.error)) + '</p>';
     setHTML(appearanceStatus, status);
     setHTML(appearanceDesc, '<span class="remote-key">OK</span><span>' + esc(addonText(t.group === 'addons' ? 'Choose an extension' : 'Manage extension')) + '</span>');
   }
@@ -1819,7 +1823,7 @@
     if (remote) body += '<h3>' + text('Verbindungen', 'Connections') + '</h3><dl><dt>' + text('Fernseher', 'Television') + '</dt><dd>' + esc(copy.television) + '</dd><dt>iPhone</dt><dd>' + esc(copy.iphone) + '</dd><dt>' + text('Tastatur', 'Keyboard') + '</dt><dd>' + esc(copy.keyboard) + '</dd></dl><h3>' + text('iPhone Kopplungscode', 'iPhone pairing code') + '</h3><div id="remotePairPin" class="addon-pair-pin">' + esc(copy.code) + '</div><p id="remotePairTime">' + esc(copy.time) + '</p><p class="setting-reason">' + text('Der Code gilt zwei Minuten. Bereits gekoppelte Geräte bleiben gespeichert.', 'The code is valid for two minutes. Existing pairings remain saved.') + '</p>';
     else body += '<h3>' + text('Mit dem Handy anmelden', 'Sign in with your phone') + '</h3>' + (/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(link.qr || '') && link.phase === 'pending' && link.expiresAt > Date.now() ? '<img id="spotifyPairQr" class="addon-pair-qr" src="' + esc(link.qr) + '" alt="Spotify QR">' : '<div class="addon-pair-placeholder">' + (window.CleanFramePreview && link.phase === 'pending' ? text('QR Vorschau', 'QR preview') : icon(link.phase === 'connected' ? 'check' : 'settings')) + '</div>') + '<p>' + esc(copy.link) + '</p>' + (link.phase === 'pending' ? '<p>' + esc(link.code || '') + ' · ' + SETUP.remaining(link.expiresAt / 1000) + '</p>' : '');
     setHTML(appearanceStatus, body + (copy.error ? '<p class="setting-error">' + esc(copy.error) + '</p>' : '') + '</aside>');
-    var selected = appearanceRows.querySelector('.is-focus'); if (selected) selected.scrollIntoView({ block: 'nearest' });
+    var selected = appearanceRows.querySelector('.is-focus'); if (selected) { if (selected.scrollIntoViewIfNeeded) selected.scrollIntoViewIfNeeded(false); else selected.scrollIntoView({ block: 'nearest' }); }
     setHTML(appearanceDesc, '<span class="remote-key">OK</span><span>' + text('Ausgewählte Aktion ausführen', 'Perform selected action') + '</span>');
   }
   function renderAppearance(t) {
