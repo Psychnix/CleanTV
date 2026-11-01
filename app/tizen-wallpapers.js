@@ -9,6 +9,7 @@
   var BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', INDEX_URL = BASE + INDEX;
   var PREFIX = 'cleantv.wallpapers.v1', DB_NAME = 'cleantv-wallpapers';
   var INDEX_LIMIT = 262144, MAX_ENTRIES = 200, KEEP = 10, DAY = 86400000, PICKER_GAP = 60000, TIMEOUT = 15000, FILE_TIMEOUT = 60000;
+  var HASH_STEP = 131072; // bytes hashed per task, a multiple of 64
   var ROLES = ['jpg', 'thumb', 'panel', 'study-soft', 'field-blur', 'field-frost', 'field-clear'];
   var NAMES = { jpg: 'image.jpg', thumb: 'thumb.jpg', panel: 'panel.jpg', 'study-soft': 'study-soft.jpg', 'field-blur': 'field-blur.jpg', 'field-frost': 'field-frost.jpg', 'field-clear': 'field-clear.jpg' };
   var LIMITS = { jpg: 4194304, thumb: 262144, panel: 65536, 'study-soft': 2097152, 'field-blur': 2097152, 'field-frost': 2097152, 'field-clear': 2097152 };
@@ -151,10 +152,20 @@
   function allowed() { return !retiring && addon().enabled; }
 
   /* ---------- Network ---------- */
-  /* GET without headers or credentials; done(error, buffer). The final address must be the requested one. */
-  function get(url, limit, timeout, done) {
-    var request = new window.XMLHttpRequest(), ended = false;
-    function end(error, buffer) { if (!ended) { ended = true; done(error, buffer); } }
+  var requests = []; // in flight: {still(), cancel()}
+  /* GET without headers or credentials; done(error, buffer). The final address must be the requested one.
+     The request runs only while still() holds: halt() ends it at once with 'cancelled'. */
+  function get(url, limit, timeout, still, done) {
+    var request = new window.XMLHttpRequest(), ended = false, item = { still: still, cancel: cancel };
+    function end(error, buffer) {
+      var i = requests.indexOf(item);
+      if (ended) return;
+      ended = true;
+      if (i >= 0) requests.splice(i, 1);
+      done(error, buffer);
+    }
+    // The result comes first, so the abort event that follows is ignored.
+    function cancel() { if (!ended) { end('cancelled'); try { request.abort(); } catch (e) { /* already ended */ } } }
     request.open('GET', url, true);
     request.responseType = 'arraybuffer';
     request.timeout = timeout;
@@ -170,23 +181,35 @@
       if (!buffer || buffer.byteLength > limit) { end('size'); return; }
       end('', buffer);
     };
+    requests.push(item);
     try { request.send(); } catch (e) { end('network'); }
   }
+  // Disable, Uninstall or another choice ends what is no longer wanted; sync() runs this on every change.
+  function halt() { requests.slice().forEach(function (r) { if (!r.still()) r.cancel(); }); }
   function check() {
     if (!allowed() || fetching) return;
     fetching = true; lastAttempt = now();
-    get(INDEX_URL, INDEX_LIMIT, TIMEOUT, function (error, buffer) {
+    get(INDEX_URL, INDEX_LIMIT, TIMEOUT, allowed, function (error, buffer) {
       var list = null;
       fetching = false;
+      // Disabled or removed meanwhile: the answer, or its absence, no longer matters.
+      if (!allowed()) return;
       if (!error) { try { list = parse(decode(buffer)); } catch (e) { list = null; } }
       // A failed or invalid index keeps the previous wallpapers.
       if (!list) { message = STALE; changed(); return; }
-      if (!allowed()) return;
       apply(list);
     });
   }
+  /* The same files for a photo (paths follow from ID and role). */
+  function same(a, b) {
+    return !!(a && b) && a.rev === b.rev && ROLES.every(function (role) { return a.files[role].size === b.files[role].size && a.files[role].sha256 === b.files[role].sha256; });
+  }
   function apply(list) {
-    var st = state(), use = {}, gone = [];
+    var st = state(), use = {}, gone = [], before = {}, after = {};
+    // A failed photo is tried again before its ten minutes are up only when this index changes it.
+    (full || []).forEach(function (e) { before[e.id] = e; });
+    list.forEach(function (e) { after[e.id] = e; });
+    Object.keys(failed).forEach(function (id) { if (!same(before[id], after[id])) delete failed[id]; });
     full = list;
     st.inUse.concat([st.wall]).forEach(function (id) { if (id) use[id] = true; });
     // A photo removed from the index stays while it is shown or chosen, marked gone.
@@ -194,7 +217,6 @@
     gone.forEach(function (e) { e.gone = true; });
     record.entries = list.map(function (e) { return light(e); }).concat(gone);
     record.checked = now(); record.active = true; record.version = addon().version;
-    failed = {};
     update(function () { if (walls) rebuild(record.entries); });
     if (message === STALE) message = '';
     save(); writeMeta(list); changed(); sync();
@@ -296,8 +318,11 @@
     st.inUse.concat([st.wall]).forEach(function (id) { if (id) use[id] = true; });
     return { keep: keep, use: use };
   }
+  /* A download goes on only while the package is enabled and this revision of the photo is still kept. */
+  function wanted(id, rev) { var w = find(id); return allowed() && !!w && w.rev === rev && plan().keep.indexOf(id) >= 0; }
   var running = false, again = false, scheduled = false;
   function sync() {
+    halt();
     if (scheduled) return;
     scheduled = true;
     later(function () { scheduled = false; if (running) { again = true; return; } run(); });
@@ -337,13 +362,15 @@
       if (d) fetchCopy(need, stored); else idle();
     });
     function stored(error) {
+      var cancelled = error === 'cancelled';
       if (error === 'QuotaExceededError') { quota = true; message = FULL; }
       else if (error === 'checksum') message = MISMATCH;
       else if (!error && (message === FULL || message === MISMATCH)) message = '';
-      // A failed photo waits ten minutes before it is tried again, unless a new index arrives.
-      if (error) failed[need] = now();
+      // A failed photo waits ten minutes before it is tried again, unless a new index changes it. A cancelled
+      // one does not: the next photo, or retire(), goes on at once, and choosing it again starts it again.
+      if (error && !cancelled) failed[need] = now();
       changed(); idle();
-      if (!error) sync();
+      if (!error || cancelled) sync();
     }
   }
   function known(id, done) {
@@ -351,20 +378,25 @@
     if (pick(full)) { done(pick(full)); return; }
     readMeta(function (list) { if (list && !full) full = list; done(pick(list)); });
   }
-  /* Download, verify and store all seven files of one photo, or nothing. */
+  /* Download, verify and store all seven files of one photo, or nothing. It stops ('cancelled') as soon as
+     the photo is no longer wanted: halt() aborts the file in flight, and every step checks again. */
   function fetchCopy(id, done) {
     known(id, function (meta) {
       var buffers = {}, i = 0;
       if (!meta) { done('unknown'); return; }
+      function still() { return wanted(id, meta.rev); }
       (function step() {
         var role, file;
+        if (!still()) { done('cancelled'); return; }
         if (i >= ROLES.length) { store(meta, buffers, done); return; }
         role = ROLES[i++]; file = meta.files[role];
-        get(BASE + file.path, file.size, FILE_TIMEOUT, function (error, buffer) {
+        get(BASE + file.path, file.size, FILE_TIMEOUT, still, function (error, buffer) {
           if (error) { done(error); return; }
-          // Hashing is synchronous; one file per task keeps each pause short.
-          later(function () {
-            if (buffer.byteLength !== file.size || SHA.bytes(new window.Uint8Array(buffer)) !== file.sha256) { done('checksum'); return; }
+          if (!still()) { done('cancelled'); return; }
+          if (buffer.byteLength !== file.size) { done('checksum'); return; }
+          // Hashing is synchronous, so it runs in steps of 128 KiB, one per task: a remote key never waits long.
+          SHA.sliced(new window.Uint8Array(buffer), HASH_STEP, later, function (sum) {
+            if (sum !== file.sha256) { done('checksum'); return; }
             buffers[role] = buffer;
             step();
           });
@@ -373,8 +405,6 @@
     });
   }
   function store(meta, buffers, done) {
-    var w = find(meta.id);
-    if (!w || w.rev !== meta.rev || plan().keep.indexOf(meta.id) < 0) { done(''); return; }
     transact(['files'], 'readwrite', function (tx) {
       var files = tx.objectStore('files');
       ROLES.forEach(function (role) { files.put({ id: meta.id, rev: meta.rev, role: role, data: buffers[role] }, meta.id + '/' + role); });

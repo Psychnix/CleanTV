@@ -1,4 +1,4 @@
-/* SHA-256 (FIPS 180-4) for package checksums, storage sums and PKCE. Pure computation. */
+/* SHA-256 (FIPS 180-4) for package checksums, storage sums, PKCE and add-on wallpaper files. Pure computation. */
 (function () {
   'use strict';
   var K = [
@@ -34,10 +34,15 @@
     H[0] = H[0] + a | 0; H[1] = H[1] + b | 0; H[2] = H[2] + c | 0; H[3] = H[3] + d | 0;
     H[4] = H[4] + e | 0; H[5] = H[5] + f | 0; H[6] = H[6] + g | 0; H[7] = H[7] + h | 0;
   }
+  function start() { return [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]; }
   function digest(bytes) {
-    var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
-    var W = new Array(64), length = input(bytes).length, full = length - length % 64, rest = length - full, tail, i, out;
+    var H = start(), W = new Array(64), length = input(bytes).length, full = length - length % 64, i;
     for (i = 0; i < full; i += 64) block(H, W, bytes, i);
+    return finish(H, W, bytes, full);
+  }
+  /* The last partial block and the padding, once the `full` bytes before it are hashed. */
+  function finish(H, W, bytes, full) {
+    var length = bytes.length, rest = length - full, tail, i, out;
     // Padding: 0x80, zeros, then the message length in bits as a 64-bit big-endian number.
     tail = new window.Uint8Array(rest < 56 ? 64 : 128);
     for (i = 0; i < rest; i++) tail[i] = bytes[full + i];
@@ -50,6 +55,18 @@
     out = new window.Uint8Array(32);
     for (i = 0; i < 8; i++) { out[i * 4] = H[i] >>> 24; out[i * 4 + 1] = (H[i] >>> 16) & 0xff; out[i * 4 + 2] = (H[i] >>> 8) & 0xff; out[i * 4 + 3] = H[i] & 0xff; }
     return out;
+  }
+  /* The same digest in steps of at most `slice` bytes (a positive multiple of 64), for large files on the
+     main thread: schedule(next) runs each step later, the first one too, and done(hex) gets the result. */
+  function sliced(bytes, slice, schedule, done) {
+    var H = start(), W = new Array(64), length = input(bytes).length, full = length - length % 64, at = 0;
+    if (typeof slice !== 'number' || !(slice > 0) || slice % 64 !== 0) throw new RangeError('SHA-256 slice must be a positive multiple of 64.');
+    function step() {
+      var end = Math.min(full, at + slice);
+      for (; at < end; at += 64) block(H, W, bytes, at);
+      if (at < full) schedule(step); else done(hex(finish(H, W, bytes, full)));
+    }
+    schedule(step);
   }
   function hex(bytes) {
     var s = '', i;
@@ -85,6 +102,7 @@
   window.CleanTVSha256 = {
     bytes: function (bytes) { return hex(digest(bytes)); },
     raw: digest,
+    sliced: sliced,
     text: function (value) { return hex(digest(utf8(value))); },
     base64url: base64url,
     utf8: utf8
