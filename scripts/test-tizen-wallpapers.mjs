@@ -324,6 +324,34 @@ test('rotation keeps at most ten add-on favourites; turning it off deletes them 
   assert.equal(h.model.favourites.length, 13);
 });
 
+test('object URLs are released once a photo is no longer shown, also for kept favourites', () => {
+  const h = harness(), photos = Array.from({ length: 4 }, (_, i) => photo('aw-u' + i));
+  const ids = photos.map(p => p.entry.id);
+  h.bind({ wall: 'misty' }); h.install(photos);
+  h.set({ favourites: ids, rotation: true });
+  assert.deepEqual(ids.filter(id => h.walls.stored(id)), ids, 'rotation keeps the four favourites');
+  // Rotation visits every favourite; each is shown from its local copy.
+  const seen = {};
+  for (const id of ids) {
+    h.set({ wall: id, shown: id });
+    seen[id] = h.resolved(id);
+    assert.ok(seen[id].every(u => u.startsWith('blob:qa/')), id + ' is shown from its local copy');
+    assert.ok(seen[id].every(u => !h.urls.revoked.includes(u)), id + ' keeps its URLs while shown');
+  }
+  for (const id of ids.slice(0, -1)) assert.ok(seen[id].every(u => h.urls.revoked.includes(u)), id + ' left the screen: its URLs are revoked');
+  h.set({ wall: 'misty', shown: 'misty' });
+  const live = h.urls.created.map(c => c.url).filter(u => !h.urls.revoked.includes(u));
+  assert.deepEqual(live, [], 'no object URL stays live for photos that are not shown');
+  assert.deepEqual(ids.filter(id => h.walls.stored(id)), ids, 'the favourites stay stored');
+  assert.equal(h.walls.url('aw-u0', 'jpg'), BASE + 'cleantv-wallpapers/generated/aw-u0/image.jpg', 'not shown: the stream address');
+  // Shown again: new object URLs from IndexedDB, without a download.
+  const count = h.requests().length;
+  h.set({ wall: 'aw-u0', shown: 'aw-u0' });
+  const again = h.resolved('aw-u0');
+  assert.ok(again.every(u => u.startsWith('blob:qa/') && !seen['aw-u0'].includes(u)));
+  assert.equal(h.requests().length, count);
+});
+
 test('a quota failure keeps streaming, stops further downloads and names the cause', () => {
   const h = harness(), photos = Array.from({ length: 3 }, (_, i) => photo('aw-q' + i));
   h.bind(); h.install(photos);

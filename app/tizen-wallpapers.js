@@ -316,7 +316,9 @@
       save(); changed();
     }
     drop = Object.keys(record.stored).filter(function (id) { return p.keep.indexOf(id) < 0 && !p.use[id]; });
-    Object.keys(urls).forEach(function (id) { if (!p.use[id] && (record.stored[id] !== urls[id].rev || drop.indexOf(id) >= 0)) revoke(id); });
+    // Object URLs pin their blobs in TV memory: only a photo in use keeps them. A kept favourite gets
+    // new ones from IndexedDB when it is shown again (resolve).
+    Object.keys(urls).forEach(function (id) { if (!p.use[id]) revoke(id); });
     if (drop.length) {
       transact(['files'], 'readwrite', function (tx) {
         var store = tx.objectStore('files');
