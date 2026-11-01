@@ -1,0 +1,4 @@
+# Local wrangler state and any dev secrets file never belong in Git.
+.wrangler/
+node_modules/
+.dev.vars

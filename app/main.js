@@ -11,7 +11,9 @@
   var ADDONS = window.CleanFrameAddons;
   var SOFTWARE = window.CleanFrameSoftware;
   var SETUP = window.CleanFrameAddonSetup;
-  var SPOTIFY = !!(ANDROID && FrameDevice.capabilities.spotify);
+  // The Android bridge or the Samsung Web API adapter (tizen-spotify.js) provides FrameDevice.spotify.
+  var SPOTIFY = !!(window.FrameDevice && FrameDevice.capabilities && FrameDevice.capabilities.spotify && FrameDevice.spotify);
+  var SPOTIFY_APP = ANDROID ? 'com.spotify.tv.android' : 'rJeHak5zRg.Spotify';
   var spotifyState = { status: 'idle' }, spotifyAt = 0, spotifyTimer = 0, spotifyObserving = null;
   var spotifyCommands = ['previous', 'toggle', 'next'];
   var spotifyAwake = false, spotifyIdleTimer = 0;
@@ -1192,7 +1194,7 @@
       { id: 'spotifyAccess', title: translate('Connection'), horizontal: true, items: [
         { action: 'spotify.access', label: spotifyState.permission ? translate('Access granted') : translate('Allow media access') },
         { action: 'spotify.open', label: translate('Open Spotify') }
-      ], reason: spotifyStatus() }
+      ].filter(function (item) { return ANDROID || item.action !== 'spotify.access'; }), reason: spotifyStatus() }
     ];
     if (t.group === 'background') return [
       { id: 'bg', title: translate('Background type'), items: options('bg', ['photo', 'light', 'dark']) },
@@ -1231,6 +1233,8 @@
   function addonDescription(item) {
     var text = item.description;
     if (text && typeof text === 'object') text = text[S.c.language] || text.en;
+    // The Spotify package text is English only; the host describes its own provider in both languages.
+    if (item.id === 'spotify' && item.kind === 'spotify' && !ANDROID) return addonText('Playback, account and widget appearance');
     return typeof text === 'string' ? text : item.id === 'spotify' ? addonText('Playback, account and widget appearance') : addonText(item.kind === 'native' ? 'Native service' : 'Home widget');
   }
   function addonActivation(item) {
@@ -1368,8 +1372,8 @@
         if (device) push({ id: 'message', msg: 'remoteForget', deviceId: device.id, content: { title: S.c.language === 'de' ? 'Kopplung entfernen?' : 'Remove pairing?', line: S.c.language === 'de' ? 'Dieses iPhone muss anschließend erneut gekoppelt werden.' : 'This iPhone will need to pair again.', actions: [['back', translate('Cancel')], ['remoteForget', translate('Remove')]] }, f: { b: 0 } });
       } else SETUP.command(operation);
     }
-    else if (item.action === 'spotify.signout') push({ id: 'message', msg: 'signout', content: { title: translate('Sign out of Spotify?'), line: translate('Disconnect your Spotify account from CleanTV.'), note: translate('The Spotify app stays signed in and music keeps playing.'), actions: [['back', translate('Cancel')], ['signout', translate('Sign out')]] }, f: { b: 0 } });
-    else if (item.action === 'spotify.open') perform('Spotify', function (done) { FrameDevice.launchApp('com.spotify.tv.android', done); });
+    else if (item.action === 'spotify.signout') push({ id: 'message', msg: 'signout', content: { title: translate('Sign out of Spotify?'), line: translate('Disconnect your Spotify account from CleanTV.'), note: translate(ANDROID ? 'The Spotify app stays signed in and music keeps playing.' : 'Music keeps playing. To revoke access completely, remove the app at spotify.com/account/apps.'), actions: [['back', translate('Cancel')], ['signout', translate('Sign out')]] }, f: { b: 0 } });
+    else if (item.action === 'spotify.open') perform('Spotify', function (done) { FrameDevice.launchApp(SPOTIFY_APP, done); });
   }
   V.appearance = {
     norm: function (t) {
@@ -1579,7 +1583,7 @@
   function spotifyStatus() {
     if (!spotifyState.permission) return translate('Android grants access for all apps. CleanTV only uses Spotify media information.');
     if (spotifyState.errorMessage) return spotifyState.errorMessage;
-    if (spotifyState.webApi === 'unlinked') return translate('Sign in with QR to enable controls.');
+    if (spotifyState.webApi === 'unlinked') return translate(ANDROID ? 'Sign in with QR to enable controls.' : 'Sign in with QR to show and control your playback.');
     if (spotifyState.connection === 'unavailable') return translate('Spotify could not connect. Open Spotify once, then return Home.');
     return spotifyState.status === 'playing' || spotifyState.status === 'paused' ? spotifyState.webApi === 'connected' ? translate('Spotify connected. Controls use your active device.') : translate('Connected to your Spotify session.') : translate('Ready. Start Spotify on a device using the same account.');
   }
@@ -1590,7 +1594,7 @@
     else if (index === 3) {
       if (key === 'down' || key === 'left') f.p = 1;
       else if (key === 'right') { f.zone = 'util'; f.u = clamp(S.lastUtil, 0, utils().length - 1); }
-      else if (key === 'ok') perform('Spotify', function (done) { FrameDevice.launchApp('com.spotify.tv.android', done); });
+      else if (key === 'ok') perform('Spotify', function (done) { FrameDevice.launchApp(SPOTIFY_APP, done); });
     }
     else if (key === 'right' && index === 2) { f.zone = 'util'; f.u = clamp(S.lastUtil, 0, utils().length - 1); }
     else if (key === 'left' || key === 'right') {
@@ -1624,7 +1628,8 @@
     if (spotifyState.status === 'playing') spotifyTimer = setTimeout(spotifyProgress, 1000);
   }
   function renderSpotify() {
-    var visible = spotifyVisible(), expanded = spotifyExpanded(), t = top(), art = typeof spotifyState.art === 'string' && /^\/media\/spotify-[0-9]+\.png$/.test(spotifyState.art) ? spotifyState.art : '';
+    // Android serves local artwork; the Samsung adapter passes i.scdn.co covers it has already loaded.
+    var visible = spotifyVisible(), expanded = spotifyExpanded(), t = top(), art = typeof spotifyState.art === 'string' && (/^\/media\/spotify-[0-9]+\.png$/.test(spotifyState.art) || !ANDROID && /^https:\/\/i\.scdn\.co\/image\/[a-f0-9]{40}$/.test(spotifyState.art)) ? spotifyState.art : '';
     if (!visible || t.id !== 'home' || t.f.zone !== 'spotify') { clearTimeout(spotifyIdleTimer); spotifyIdleTimer = 0; spotifyAwake = false; expanded = false; }
     var surface = S.c.spotifySurface, colour = /^#[0-9a-f]{6}$/i.test(spotifyState.artColor || '') ? spotifyState.artColor : '#272727';
     var backdrop = wall(S.shown ? S.shown.wall : S.c.wall), palette = ADAPTIVE_INK[backdrop.id];
@@ -2063,8 +2068,9 @@
     }).join('') + '</div>';
     setHTML(appearanceRows, body); appearanceRows.scrollTop = scroll;
     body = '<aside class="addon-setup-status">';
+    // On Samsung the relay shows the pairing code on the phone, which must confirm it before the TV is signed in.
     if (remote) body += '<h3>' + text('Verbindungen', 'Connections') + '</h3><dl><dt>' + text('Fernseher', 'Television') + '</dt><dd>' + esc(copy.television) + '</dd><dt>iPhone</dt><dd>' + esc(copy.iphone) + '</dd><dt>' + text('Tastatur', 'Keyboard') + '</dt><dd>' + esc(copy.keyboard) + '</dd></dl><h3>' + text('iPhone Kopplungscode', 'iPhone pairing code') + '</h3><div id="remotePairPin" class="addon-pair-pin">' + esc(copy.code) + '</div><p id="remotePairTime">' + esc(copy.time) + '</p><p class="setting-reason">' + text('Der Code gilt zwei Minuten. Bereits gekoppelte Geräte bleiben gespeichert.', 'The code is valid for two minutes. Existing pairings remain saved.') + '</p>';
-    else body += '<h3>' + text('Mit dem Handy anmelden', 'Sign in with your phone') + '</h3>' + (/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(link.qr || '') && link.phase === 'pending' && link.expiresAt > Date.now() ? '<img id="spotifyPairQr" class="addon-pair-qr" src="' + esc(link.qr) + '" alt="Spotify QR">' : '<div class="addon-pair-placeholder">' + (window.CleanFramePreview && link.phase === 'pending' ? text('QR Vorschau', 'QR preview') : icon(link.phase === 'connected' ? 'check' : 'settings')) + '</div>') + '<p>' + esc(copy.link) + '</p>' + (link.phase === 'pending' ? '<p>' + esc(link.code || '') + ' · ' + SETUP.remaining(link.expiresAt / 1000) + '</p>' : '');
+    else body += '<h3>' + text('Mit dem Handy anmelden', 'Sign in with your phone') + '</h3>' + (/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(link.qr || '') && link.phase === 'pending' && link.expiresAt > Date.now() ? '<img id="spotifyPairQr" class="addon-pair-qr" src="' + esc(link.qr) + '" alt="Spotify QR">' : '<div class="addon-pair-placeholder">' + (window.CleanFramePreview && link.phase === 'pending' ? text('QR Vorschau', 'QR preview') : icon(link.phase === 'connected' ? 'check' : 'settings')) + '</div>') + '<p>' + esc(copy.link) + '</p>' + (link.phase === 'pending' ? '<p>' + (ANDROID ? '' : text('Code am Handy: ', 'Code on your phone: ')) + esc(link.code || '') + ' · ' + SETUP.remaining(link.expiresAt / 1000) + '</p>' : '');
     setHTML(appearanceStatus, body + (copy.error ? '<p class="setting-error">' + esc(copy.error) + '</p>' : '') + '</aside>');
     var selected = appearanceRows.querySelector('.is-focus'); if (selected) { if (selected.scrollIntoViewIfNeeded) selected.scrollIntoViewIfNeeded(false); else selected.scrollIntoView({ block: 'nearest' }); }
     setHTML(appearanceDesc, '<span class="remote-key">OK</span><span>' + text('Ausgewählte Aktion ausführen', 'Perform selected action') + '</span>');

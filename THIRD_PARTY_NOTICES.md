@@ -67,3 +67,17 @@ unmodified, under MPL-2.0. The pinned source revision is recorded in
 app/vendor/spatial-navigation-source.json; source and license are distributed
 in app/vendor/. CleanFrame's integration is implemented separately in design.js.
 https://github.com/luke-chang/js-spatial-navigation
+
+## Samsung Spotify sign-in QR code
+
+The Samsung build draws the Spotify sign-in QR code with Kazuhiko Arase's
+qrcode-generator 1.4.4, unmodified, under the MIT licence. The file
+app/vendor/qrcode.js keeps its licence header; the full licence text is
+app/vendor/qrcode.LICENSE. The npm tarball, its sha512 integrity and the file's
+SHA-256 are recorded in app/vendor/qrcode-source.json. "QR Code" is a registered
+trademark of DENSO WAVE INCORPORATED.
+https://github.com/kazuhikoarase/qrcode-generator
+
+The relay in relay/spotify-worker/ uses only the Cloudflare Workers runtime and
+has no third-party dependencies. Spotify is a trademark of Spotify AB; CleanTV
+uses the public Web API with the owner's own Developer app.

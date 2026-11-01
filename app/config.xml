@@ -17,5 +17,6 @@
   <access origin="https://accounts.spotify.com" subdomains="false"/>
   <access origin="https://api.spotify.com" subdomains="false"/>
   <access origin="https://i.scdn.co" subdomains="false"/>
+  <access origin="https://cleantv-spotify.tobiaspsi96.workers.dev" subdomains="false"/>
   <tizen:setting screen-orientation="landscape" context-menu="disable" background-support="disable" encryption="disable" install-location="auto" hwkey-event="enable"/>
 </widget>

@@ -5,6 +5,8 @@
   function tr(language, de, en) { return language === 'de' ? de : en; }
   function row(id, title, items, reason) { return { id: id, title: title, horizontal: true, items: items, reason: reason || '' }; }
   function action(op, label, disabled) { return { action: 'remote.' + op, label: label, disabled: !!disabled }; }
+  // The Samsung adapter names the failed host or step (English; app/i18n.js translates it).
+  function linkMessage(language) { return typeof link.message === 'string' && link.message ? window.CleanFrameI18n.text(language, link.message.slice(0, 200)) : ''; }
   function remaining(expires) { var seconds = Math.max(0, Math.ceil(expires - Date.now() / 1000)); return Math.floor(seconds / 60) + ':' + ('0' + seconds % 60).slice(-2); }
   window.CleanFrameAddonSetup = {
     remote: function () { return remote; }, link: function () { return link; }, error: function () { return issue; }, remaining: remaining,
@@ -43,7 +45,7 @@
         television: t(philips.state === 'connected' ? 'Verbunden' : remote.enabled && philips.paired && !philips.hasError ? 'Bereit' : 'Nicht verbunden', philips.state === 'connected' ? 'Connected' : remote.enabled && philips.paired && !philips.hasError ? 'Ready' : 'Not connected'),
         iphone: t(apple.connected || apple.state === 'connected' ? 'Verbunden' : apple.pairedDevices ? 'Gekoppelt' : 'Nicht gekoppelt', apple.connected || apple.state === 'connected' ? 'Connected' : apple.pairedDevices ? 'Paired' : 'Not paired'),
         keyboard: t(keyboard.selected ? 'Ausgewählt' : 'Nicht ausgewählt', keyboard.selected ? 'Selected' : 'Not selected'),
-        error: issue ? t('Verbindung nicht erreichbar. Bitte erneut versuchen.', 'Connection unavailable. Please retry.') : (remote.serviceError ? t('Empfänger konnte nicht starten. Bitte das Add-on aktualisieren und erneut aktivieren.', 'Receiver could not start. Update the add-on and enable it again.') : '') || (philips.hasError ? t('TV-Verbindung fehlgeschlagen. Kopplung erneut starten.', 'TV connection failed. Start pairing again.') : ''),
+        error: issue ? t('Verbindung nicht erreichbar. Bitte erneut versuchen.', 'Connection unavailable. Please retry.') : linkMessage(language) || (remote.serviceError ? t('Empfänger konnte nicht starten. Bitte das Add-on aktualisieren und erneut aktivieren.', 'Receiver could not start. Update the add-on and enable it again.') : '') || (philips.hasError ? t('TV-Verbindung fehlgeschlagen. Kopplung erneut starten.', 'TV connection failed. Start pairing again.') : ''),
         link: t(({ preparing: 'Anmeldung wird vorbereitet …', idle: 'Anmeldung erneut starten.', pending: 'Scanne den QR-Code mit deinem Handy und melde dich bei Spotify an.', connected: 'Spotify ist verbunden. Du kannst zu den Einstellungen zurückkehren.', expired: 'QR-Code abgelaufen. Erstelle einen neuen Code.', cancelled: 'Anmeldung abgebrochen. Du kannst erneut beginnen.', failed: 'Anmeldung fehlgeschlagen. Bitte erneut versuchen.', unreachable: 'Anmeldeseite nicht erreichbar. Bitte erneut versuchen.' })[link.phase] || 'Anmeldung wird vorbereitet …', ({ preparing: 'Preparing sign in …', idle: 'Please restart sign in.', pending: 'Scan the QR code with your phone and sign in to Spotify.', connected: 'Spotify is connected. You can return to settings.', expired: 'QR code expired. Create a new code.', cancelled: 'Sign in cancelled. You can try again.', failed: 'Sign in failed. Please try again.', unreachable: 'Sign in unavailable. Please try again.' })[link.phase] || 'Preparing sign in …')
       };
     }

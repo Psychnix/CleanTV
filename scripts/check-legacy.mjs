@@ -188,9 +188,11 @@ function synthetic([c, html]) {
   return { error, diffs, text, notes: r ? r.diagnostics.notes : [], strays };
 }
 
-const STATES = [], EXTENDED = [], WIDGETS = [], CARDS = [], WEATHER = [];
+// CHECK_STATE=<text> keeps only the states, and the named Spotify checks, whose names contain the text (any case).
+const STATES = [], EXTENDED = [], WIDGETS = [], CARDS = [], WEATHER = [], SPOTIFY = [];
 let target = STATES;
-function state(name, prefs, steps = []) { if (!process.env.CHECK_STATE || name.toLowerCase().includes(process.env.CHECK_STATE.toLowerCase())) target.push({ name, prefs, steps }); }
+const wants = name => !process.env.CHECK_STATE || name.toLowerCase().includes(process.env.CHECK_STATE.toLowerCase());
+function state(name, prefs, steps = []) { if (wants(name)) target.push({ name, prefs, steps }); }
 const base = { bg: 'photo', wall: 'misty', layout: 'dock', apps: 'both', controls: 'icons', focus: 'glass', material: 'soft', font: 'manrope', controlsPosition: 'auto', language: 'en', dateVisible: true };
 const look = patch => ({ ...base, ...patch });
 for (const bg of ['dark', 'light']) for (const layout of ['dock', 'list']) {
@@ -276,6 +278,14 @@ state('weather settings, photo, German', look({ wall: 'peaks', language: 'de' })
 state('weather keyboard, photo, suggestions', look({ wall: 'bridge' }), [['weather', { at: ago(2), code: 1 }]].concat(OPEN_KEYBOARD, [['keys', '53111'], ['until', 'cleantv.kb.pick.0']], RIGHT));
 state('weather keyboard, light, German, typed name', look({ bg: 'light', language: 'de' }), [['weather', { at: ago(2), code: 1 }]].concat(OPEN_KEYBOARD, [['keys', 'Neustadt'], ['until', 'cleantv.kb.pick.6']], RIGHT, [['nav', 'down'], ['nav', 'down'], ['nav', 'down'], ['nav', 'down']]));
 state('weather keyboard, dark, empty', look({ bg: 'dark' }), [['weather', { at: ago(2), code: 1 }]].concat(OPEN_KEYBOARD, [['nav', 'right']]));
+// Spotify on Samsung with a stored sign-in; the QR screen and the old-engine checks run when their names match.
+target = SPOTIFY;
+state('Spotify card on Tizen, photo dock', look({ wall: 'golden' }));
+state('Spotify card on Tizen, dark list, German', look({ bg: 'dark', layout: 'list', language: 'de' }));
+state('Spotify card on Tizen, light dock', look({ bg: 'light' }));
+state('Spotify card on Tizen, expanded', look({ wall: 'peaks' }), [['nav', 'down']]);
+state('Spotify settings on Tizen', look({ wall: 'peaks' }), [['scene', 'settings'], ['act', 'settings.group.addons'], ['act', 'addon.details.spotify'], ['act', 'group.spotify']]);
+const SPOTIFY_QR = wants('Spotify QR screen on Tizen'), SPOTIFY_OLD = wants('Spotify card and QR on the old engine');
 
 // Seeds a weather record in the page and re-reads it; ages are whole minutes before NOW in both pages.
 const WEATHER_PACKAGE = JSON.stringify({ installed: { 'cleantv-weather': { api: 1, id: 'cleantv-weather', name: 'Wetter', version: '1.0.0', kind: 'weather', description: 'Wetter', author: 'Psychnix', license: 'MIT', enabled: true } }, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } });
@@ -388,6 +398,12 @@ async function pass(native, legacy, states) {
   }
 }
 
+// CHECK_LEGACY_LIST=1 prints the selected names and exits before the preview starts (scripts/test-check-legacy-filter.mjs).
+if (process.env.CHECK_LEGACY_LIST) {
+  console.log(JSON.stringify([...STATES, ...EXTENDED, ...WIDGETS, ...CARDS, ...WEATHER, ...SPOTIFY].map(s => s.name)
+    .concat(SPOTIFY_QR ? ['Spotify QR screen on Tizen'] : [], SPOTIFY_OLD ? ['Spotify card and QR on the old engine'] : [])));
+  process.exit(0);
+}
 const preview = await openPreview({ publicFonts: true });
 let extended = [];
 try {
@@ -615,6 +631,84 @@ try {
   check('the place keyboard resolves its plates and focus', weather.view === 'cleantv.weather.keyboard' && /^rgba\(/.test(weather.key) && weather.focus === 'rgb(243, 243, 239)' && /^rgba\(/.test(weather.field), weather);
   for (const p of old) { if (p.__errors.length) fail('Old engine: no page errors', p.__errors); await p.close(); }
   if (!process.env.CHECK_STATE && compared.states !== STATES.length + EXTENDED.length + WIDGETS.length + CARDS.length + WEATHER.length) fail('Every state is compared', compared);
+  // Spotify on Samsung (tizen-spotify.js): the card and the QR screen with and without the resolver, then on
+  // the real old-engine path. Routed fakes stand in for the relay, accounts.spotify.com, api.spotify.com and
+  // i.scdn.co; playback is paused (a still progress bar) and Date.now is frozen (a still QR countdown).
+  if (SPOTIFY.length || SPOTIFY_QR || SPOTIFY_OLD) {
+    const slot = data => { const json = JSON.stringify(data); return JSON.stringify({ v: 1, seq: 1, sum: createHash('sha256').update(json).digest('hex'), data: json }); };
+    const SPOTIFY_PACKAGE = { api: 1, id: 'spotify', name: 'Spotify', version: '1.0.0', kind: 'spotify', description: 'Spotify playback and account controls', author: 'CleanFrame', license: 'MIT', enabled: true };
+    const seeds = { addons: slot({ installed: { spotify: SPOTIFY_PACKAGE }, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } }), token: slot({ refreshToken: 'qa-legacy-refresh' }) };
+    const COVER = 'https://i.scdn.co/image/ab67616d00001e02' + '7'.repeat(24), cors = { 'access-control-allow-origin': '*' };
+    const reply = (route, body) => route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(body) });
+    const routeSpotify = page => Promise.all([
+      page.route(url => url.origin === 'https://cleantv-spotify.tobiaspsi96.workers.dev', route => reply(route, new URL(route.request().url()).pathname === '/pair' ? { id: 'c0ffee' + '0'.repeat(26), expiresIn: 600 } : { pending: true })),
+      page.route(url => url.origin === 'https://accounts.spotify.com', route => reply(route, { access_token: 'qa-legacy-access', token_type: 'Bearer', expires_in: 3600, scope: 'user-read-playback-state user-modify-playback-state' })),
+      page.route(url => url.origin === 'https://api.spotify.com', route => reply(route, { device: { id: 'qa-device', is_restricted: false, name: 'QA speaker' }, progress_ms: 61000, is_playing: false, actions: { disallows: {} },
+        item: { type: 'track', name: 'QA legacy track', duration_ms: 183000, artists: [{ name: 'QA Artist' }], album: { images: [{ url: COVER, width: 300, height: 300 }] } } })),
+      page.route(url => url.origin === 'https://i.scdn.co', route => route.fulfill({ status: 200, contentType: 'image/png', headers: cors, body: readFileSync(root + 'app/icon.png') }))
+    ]);
+    // Runs after harness() or oldEngine(): seeds the installed package and a stored sign-in once, and freezes Date.now.
+    const spotifyInit = s => {
+      if (!sessionStorage.getItem('__spotifySeeded')) { localStorage.setItem('cleantv.addons.v1.a', s.addons); localStorage.setItem('cleantv.spotify.v1.a', s.token); sessionStorage.setItem('__spotifySeeded', '1'); }
+      const fixed = Date.now(); Date.now = () => fixed;
+    };
+    const openSpotify = async (query, engine, options) => {
+      const page = await preview.browser.newPage({ viewport: { width: 1920, height: 1080 } });
+      page.setDefaultTimeout(15000); page.__errors = [];
+      page.on('pageerror', error => page.__errors.push(error.message));
+      page.on('response', response => { if (response.status() >= 400) page.__errors.push(response.status() + ' ' + response.url()); });
+      await routeSpotify(page);
+      await page.addInitScript(engine, options);
+      await page.addInitScript(spotifyInit, seeds);
+      await page.goto(preview.baseURL + '/home/' + query);
+      await ready(page);
+      await page.waitForFunction(src => { const c = document.getElementById('spotifyCompactCover'); return !document.getElementById('spotifyPlayer').hidden && c.getAttribute('src') === src && c.complete && c.naturalWidth > 0; }, COVER);
+      return page;
+    };
+    const from = compared.states;
+    if (SPOTIFY.length || SPOTIFY_QR) {
+      const pair = [await openSpotify('', harness, { catalog: CATALOG, seed: SEED, adaptive: false, addons: '' }), await openSpotify('?legacy=1', harness, { catalog: CATALOG, seed: SEED, adaptive: false, addons: '' })];
+      if (SPOTIFY.length) await pass(pair[0], pair[1], SPOTIFY);
+      if (SPOTIFY_QR) {
+        // The QR screen: wait on both pages until the drawn PNG has decoded, then compare.
+        const qrState = { name: 'Spotify QR screen on Tizen', prefs: look({ wall: 'peaks' }), steps: [['scene', 'settings'], ['act', 'settings.group.addons'], ['act', 'addon.details.spotify'], ['act', 'group.spotify'], ['act', 'spotify.signin']] };
+        await Promise.all(pair.map(p => drive(p, qrState)));
+        await Promise.all(pair.map(p => p.waitForFunction(() => { const img = document.getElementById('spotifyPairQr'); return img && img.complete && img.naturalWidth > 0; })));
+        const [qa, qb] = await Promise.all(pair.map(p => p.evaluate(snapshot, { props: PROPS, pseudo: PSEUDO })));
+        compare(qrState.name, qa, qb);
+        const qrFacts = await sheetFacts(pair[1]);
+        if (qrFacts.audit.length || qrFacts.diagnostics.notes.length || qrFacts.cssomVar || qrFacts.overlay) fail('Resolved sheet stays clean: ' + qrState.name, qrFacts.audit.slice(0, 8));
+        const card = await pair[1].evaluate(() => ({ countdown: document.querySelector('.addon-setup-status').innerText }));
+        if (!/Code on your phone: C0FFEE · 10:00/.test(card.countdown)) fail('The QR screen shows the labelled pairing code and countdown', card);
+      }
+      for (const p of pair) { if (p.__errors.length) fail('Spotify pages: no page errors', p.__errors); await p.close(); }
+    }
+    // Exact under a filter too: every selected Spotify state and the QR screen when selected.
+    if (compared.states - from !== SPOTIFY.length + (SPOTIFY_QR ? 1 : 0)) fail('Every Spotify state is compared', { compared: compared.states - from, expected: SPOTIFY.length + (SPOTIFY_QR ? 1 : 0) });
+
+    // The real old-engine path (no custom properties) on the UE40MU6179's installed apps.
+    if (SPOTIFY_OLD) {
+      const oldPage = await openSpotify('', oldEngine, { model: 'UE40MU6179', installed: MU6179 });
+      const oldCard = await oldPage.evaluate(() => {
+        const box = document.getElementById('spotifyCompact').getBoundingClientRect(), title = document.getElementById('spotifyCompactTitle');
+        return { active: CleanTVLegacy.active, overlay: (document.getElementById('legacyErrors') || {}).textContent || '', title: title.textContent, titleWidth: Math.round(title.getBoundingClientRect().width),
+          width: Math.round(box.width), height: Math.round(box.height), surface: getComputedStyle(document.querySelector('.spotify-surface')).backgroundColor, caps: FrameDevice.capabilities.spotify };
+      });
+      if (!oldCard.active || oldCard.overlay || oldCard.title !== 'QA legacy track' || oldCard.titleWidth < 50 || oldCard.width < 300 || oldCard.height < 60 || !/rgba?\(/.test(oldCard.surface) || oldCard.caps !== true) fail('Old engine: the Spotify card renders', oldCard);
+      await oldPage.evaluate(() => { ShoreQA.scene('settings'); ShoreQA.activate('settings.group.addons'); ShoreQA.activate('addon.details.spotify'); ShoreQA.activate('group.spotify'); });
+      const oldSettings = await oldPage.evaluate(() => ShoreQA.actions());
+      if (!oldSettings.includes('spotify.signin') || oldSettings.includes('spotify.access')) fail('Old engine: Samsung Spotify settings', oldSettings);
+      await oldPage.evaluate(() => ShoreQA.activate('spotify.open'));
+      await oldPage.waitForFunction(() => __calls.indexOf('rJeHak5zRg.Spotify') >= 0);
+      await oldPage.evaluate(() => { window.dispatchEvent(new Event('focus')); ShoreQA.activate('spotify.signin'); });
+      await oldPage.waitForFunction(() => { const img = document.getElementById('spotifyPairQr'); return img && img.complete && img.naturalWidth > 0; });
+      const oldQr = await oldPage.evaluate(() => { const r = document.getElementById('spotifyPairQr').getBoundingClientRect(); return { width: Math.round(r.width), height: Math.round(r.height) }; });
+      if (oldQr.width !== 320 || oldQr.height !== 320) fail('Old engine: the QR code renders at 320 px', oldQr);
+      if (oldPage.__errors.length) fail('Old engine Spotify: no page errors', oldPage.__errors);
+      await oldPage.close();
+      compared.old = (compared.old || 0) + 4;
+    }
+  }
   console.log('Coverage: ' + compared.states + ' states, ' + compared.elements + ' element snapshots, ' + compared.values + ' computed values, ' + PROPS.length + ' properties (+' + PSEUDO.length + ' on ::before/::after); ' + compared.intentional + ' required tnum differences; ' + synthetics + '/' + SYNTHETIC.length + ' synthetic sheets; ' + compared.old + ' old-engine checks.');
   console.log('apply() timings (ms): first ' + stats.first.toFixed(2) + ', compile ' + stats.compile.toFixed(2) + ', last change in a render ' + (stats.lastChange || 0).toFixed(2));
   console.log('  desktop: ' + JSON.stringify(fast, (k, v) => typeof v === 'number' ? +v.toFixed(3) : v));

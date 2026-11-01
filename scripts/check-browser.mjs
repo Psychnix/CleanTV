@@ -20,7 +20,7 @@ const CATALOG = IDS.map((id, i) => ({ id, name: NAMES[i], show: true, iconPath: 
 const walls = JSON.parse(readFileSync(root + 'app/assets/wallpapers/SOURCES.json', 'utf8'));
 // Every origin config.xml allows; a request to one of them needs page.__allowExternal.
 const EXTERNAL = [...readFileSync(root + 'app/config.xml', 'utf8').matchAll(/<access origin="([^"]+)"/g)].map(m => m[1]);
-if (EXTERNAL.length < 7 || !EXTERNAL.includes('https://raw.githubusercontent.com')) throw Error('Unexpected config.xml origins: ' + EXTERNAL.join(', '));
+if (EXTERNAL.length < 8 || !EXTERNAL.includes('https://raw.githubusercontent.com') || !EXTERNAL.includes('https://cleantv-spotify.tobiaspsi96.workers.dev')) throw Error('Unexpected config.xml origins: ' + EXTERNAL.join(', '));
 const out = root + '.local/qa/';
 mkdirSync(out, { recursive: true });
 const sourceFiles = ['app/main.js', 'app/device.js', 'app/index.html', 'app/style.css', 'app/config.xml', 'app/assets/wallpapers/SOURCES.json', 'app/assets/wallpapers/catalog.js', 'app/assets/adaptive-ink.js', 'app/assets/icons/metrics.js'];
@@ -628,8 +628,10 @@ try {
     await act('settings.group.addons'); await act('addon.tab.discover');
     check('Discover before a refresh asks for one', /Refresh the catalog/.test(await current.locator('#addonEmpty').textContent()) && requests === 0);
     await act('addon.refresh');
-    await current.waitForFunction(() => /Catalog checked/.test(document.getElementById('addonEmpty')?.textContent || ''));
-    check('Refresh reports the checked catalog without Android entries', requests === 1 && /Catalog checked · 2 entries · 0 for this TV/.test(await current.locator('#addonEmpty').textContent()) && !(await call('actions')).some(a => /^addon\.details\.(spotify|apple-remote)$/.test(a)));
+    // tizen-spotify.js registers the spotify kind, so the upstream Spotify entry is offered; the native one is not.
+    await current.waitForFunction(() => CleanFrameAddons.state().catalogInfo.checked && document.querySelector('[data-action="addon.details.spotify"]'));
+    const offered = await call('actions'), counted = await current.evaluate(() => CleanFrameAddons.state().catalogInfo);
+    check('Refresh offers Spotify and skips the Android-only entry', requests === 1 && same(counted, { checked: true, total: 2, compatible: 1 }) && offered.includes('addon.details.spotify') && !offered.includes('addon.details.apple-remote'), { counted, offered });
     body = { api: 2, addons: upstream.concat([listed(packages.note), listed(packages.plain)]) };
     await act('addon.refresh');
     await current.waitForFunction(() => document.querySelector('[data-action="addon.details.note"]'));
@@ -677,7 +679,7 @@ try {
     check('Installed add-ons are listed after the reload', actions.includes('addon.details.note') && actions.includes('addon.details.plain'), actions);
     await act('addon.tab.discover');
     const offline = await current.evaluate(() => CleanFrameAddons.state().catalogInfo);
-    check('Discover shows the stored catalog offline', (await call('actions')).includes('addon.details.plain') && same(offline, { checked: true, total: 4, compatible: 2 }), offline);
+    check('Discover shows the stored catalog offline', (await call('actions')).includes('addon.details.plain') && same(offline, { checked: true, total: 4, compatible: 3 }), offline);
     await act('addon.details.note');
     check('The settings button survives the reload', (await call('actions')).includes('addon.settings.note'));
     await nav('back');
@@ -686,6 +688,118 @@ try {
     await act('addon.refresh');
     await current.waitForFunction(() => /no connection/.test(document.getElementById('appearanceStatus')?.textContent || ''));
     check('A failed refresh keeps the stored catalog and names the cause', !!(await current.$('[data-action="addon.details.note"]')) && /no connection, certificate or access policy/.test(await current.locator('#appearanceStatus').textContent()));
+  });
+  await run('Tizen Spotify: QR sign-in, card, controls and reload', async () => {
+    // Routed fakes for the catalog, the relay, accounts.spotify.com, api.spotify.com and i.scdn.co. Synthetic tokens only.
+    const BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', RELAY = 'https://cleantv-spotify.tobiaspsi96.workers.dev';
+    const ACCOUNTS = 'https://accounts.spotify.com', API = 'https://api.spotify.com', IMAGES = 'https://i.scdn.co', COVER = IMAGES + '/image/ab67616d00001e02' + '5'.repeat(24);
+    const UPSTREAM = '{"api":1,"id":"spotify","name":"Spotify","version":"1.0.0","kind":"spotify","description":"Spotify playback and account controls","author":"CleanFrame","license":"MIT"}\n';
+    const entry = { ...JSON.parse(UPSTREAM), path: 'packages/spotify/1.0.0.json', sha256: createHash('sha256').update(UPSTREAM).digest('hex') };
+    const PAIR = 'c0ffee' + '0'.repeat(26), cors = { 'access-control-allow-origin': '*' };
+    const log = { catalog: 0, pair: [], polls: 0, token: [], player: 0, controls: [], preflights: [] };
+    let approved = false, tvState = '', playingNow = true, refuse = false;
+    const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: cors, body: JSON.stringify(body) });
+    const preflight = route => { log.preflights.push(new URL(route.request().url()).origin); return route.fulfill({ status: 204, headers: { ...cors, 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS', 'access-control-allow-headers': 'authorization, content-type' } }); };
+    const player = () => ({ device: { id: 'qa-device-1', is_active: true, is_restricted: false, name: 'QA speaker' }, progress_ms: 30000, is_playing: playingNow, actions: { disallows: {} },
+      item: { type: 'track', name: 'QA Samsung track', duration_ms: 180000, artists: [{ name: 'QA Artist' }], album: { images: [{ url: COVER, width: 300, height: 300 }] } } });
+    const serve = async p => {
+      await p.route(BASE + 'cleantv-catalog.json', route => { log.catalog++; return route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify({ api: 2, addons: [entry] }) }); });
+      await p.route(BASE + 'packages/spotify/1.0.0.json', route => route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: UPSTREAM }));
+      await p.route(url => url.origin === RELAY, route => {
+        const r = route.request(), path = new URL(r.url()).pathname;
+        if (r.method() === 'OPTIONS') return preflight(route);
+        if (path === '/pair') { const body = JSON.parse(r.postData()); log.pair.push({ body, type: r.headers()['content-type'] }); tvState = body.state; return json(route, { id: PAIR, expiresIn: 600 }); }
+        if (path === '/poll/' + PAIR) { log.polls++; const result = approved ? { code: 'qa-code-1', state: PAIR + '.' + tvState } : { pending: true }; approved = false; return json(route, result); }
+        return json(route, { error: 'not_found' }, 404);
+      });
+      await p.route(url => url.origin === ACCOUNTS, route => {
+        const r = route.request();
+        if (r.method() === 'OPTIONS') return preflight(route);
+        const body = Object.fromEntries(new URLSearchParams(r.postData() || ''));
+        log.token.push({ body, type: r.headers()['content-type'], authorization: r.headers().authorization || '' });
+        if (refuse && body.grant_type === 'refresh_token') return json(route, { error: 'invalid_client' }, 400);
+        return json(route, { access_token: 'qa-access-' + log.token.length, token_type: 'Bearer', expires_in: 3600, scope: 'user-read-playback-state user-modify-playback-state', ...(body.grant_type === 'authorization_code' ? { refresh_token: 'qa-refresh-1' } : {}) });
+      });
+      await p.route(url => url.origin === API, route => {
+        const r = route.request(), url = new URL(r.url());
+        if (r.method() === 'OPTIONS') return preflight(route);
+        if (url.pathname === '/v1/me/player') { log.player++; return json(route, player()); }
+        log.controls.push({ method: r.method(), path: url.pathname, device: url.searchParams.get('device_id'), auth: r.headers().authorization });
+        if (url.pathname === '/v1/me/player/pause') playingNow = false;
+        return route.fulfill({ status: 204, headers: cors });
+      });
+      await p.route(url => url.origin === IMAGES, route => route.fulfill({ status: 200, contentType: 'image/png', headers: cors, body: readFileSync(root + 'app/icon.png') }));
+    };
+    const cardShown = () => current.waitForFunction(() => !document.getElementById('spotifyPlayer').hidden && document.getElementById('spotifyCompactTitle').textContent === 'QA Samsung track');
+    const leaks = () => current.evaluate(() => {
+      const values = Object.keys(localStorage).map(k => [k, localStorage.getItem(k)]), slots = values.filter(([k]) => k.indexOf('cleantv.spotify.v1') === 0);
+      return { keys: slots.map(v => v[0]).sort(), data: slots.map(v => JSON.parse(v[1]).data), stored: values.some(([, v]) => /qa-access|qa-code/.test(v)), state: /qa-access|qa-refresh|qa-code/.test(JSON.stringify(ShoreQA.state())) };
+    });
+    await page({}, serve);
+    check('Startup contacts no catalog, relay or Spotify host', log.catalog === 0 && !log.pair.length && !log.token.length && !log.player);
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
+    await scene('settings'); await act('settings.group.addons'); await act('addon.tab.discover'); await act('addon.refresh');
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.details.spotify"]'));
+    await act('addon.details.spotify'); await act('addon.install.spotify');
+    await current.waitForFunction(() => CleanFrameAddons.state().installed.spotify && !CleanFrameAddons.state().busy && document.querySelector('[data-action="group.spotify"]'));
+    check('Spotify installs from the catalog and offers its settings', (await call('actions')).includes('group.spotify') && !log.token.length && !log.player);
+    await act('group.spotify');
+    let text = await current.locator('#appearanceRows').innerText(), actions = await call('actions');
+    check('Samsung settings offer QR sign-in and Open Spotify, without Android media access', actions.includes('spotify.signin') && actions.includes('spotify.open') && !actions.includes('spotify.access')
+      && /Not signed in/.test(text) && /Sign in with QR to show and control your playback/.test(text), { actions, text });
+    current.__allowExternal = ['https://raw.githubusercontent.com', RELAY, ACCOUNTS, API, IMAGES];
+    await act('spotify.signin');
+    await current.waitForFunction(() => /^data:image\/png;base64,/.test(document.getElementById('spotifyPairQr')?.getAttribute('src') || '') && document.getElementById('spotifyPairQr').complete);
+    const pair = log.pair[0];
+    check('Pairing sends only the challenge, the TV state and the poll hash, as text/plain', log.pair.length === 1 && same(Object.keys(pair.body).sort(), ['challenge', 'pollHash', 'state'])
+      && /^[A-Za-z0-9_-]{43}$/.test(pair.body.challenge) && /^[A-Za-z0-9_-]{22}$/.test(pair.body.state) && /^[a-f0-9]{64}$/.test(pair.body.pollHash) && /^text\/plain/.test(pair.type), pair.type);
+    const qr = await current.evaluate(() => { const img = document.getElementById('spotifyPairQr'); return { natural: img.naturalWidth, shown: Math.round(img.getBoundingClientRect().width), status: document.querySelector('.addon-setup-status').innerText }; });
+    check('The QR screen shows a drawn PNG, the labelled pairing code and the countdown', qr.natural >= 300 && qr.shown === 320 && /Code on your phone: C0FFEE · (10:00|9:5\d)/.test(qr.status) && /Scan the QR code/.test(qr.status), qr);
+    approved = true;
+    await current.waitForFunction(() => /Spotify is connected/.test(document.querySelector('.addon-setup-status')?.innerText || ''));
+    const exchange = log.token[0];
+    check('The TV polls the relay, then redeems the code with its verifier and no client secret', log.polls >= 1 && exchange.body.grant_type === 'authorization_code' && exchange.body.code === 'qa-code-1'
+      && exchange.body.client_id === '6058b47c8aab44dd87826487377bdf6c' && exchange.body.redirect_uri === RELAY + '/callback' && !('client_secret' in exchange.body) && !exchange.authorization
+      && createHash('sha256').update(exchange.body.code_verifier).digest('base64url') === pair.body.challenge && /^application\/x-www-form-urlencoded/.test(exchange.type), Object.keys(exchange.body));
+    await nav('back');
+    await current.waitForFunction(() => ShoreQA.state().settingsGroup === 'spotify');
+    text = await current.locator('#appearanceRows').innerText();
+    check('Settings report Account connected and enable Sign out', /Account connected/.test(text) && await current.locator('[data-action="spotify.signout"]').getAttribute('aria-disabled') !== 'true', text);
+    await scene('home'); await cardShown();
+    await current.waitForFunction(src => { const c = document.getElementById('spotifyCompactCover'); return c.getAttribute('src') === src && !c.hidden && c.complete && c.naturalWidth > 0; }, COVER);
+    const card = await current.evaluate(() => ({ title: document.getElementById('spotifyTitle').textContent, artist: document.getElementById('spotifyCompactArtist').textContent, cover: document.getElementById('spotifyCover').getAttribute('src'), fallback: document.getElementById('spotifyCompactFallback').hidden, device: document.getElementById('spotifySource').textContent }));
+    check('The Home card shows title, artist, device and the i.scdn.co cover', card.title === 'QA Samsung track' && card.artist === 'QA Artist' && card.cover === COVER && card.fallback && card.device === 'QA speaker', card);
+    await current.keyboard.press('ArrowDown');
+    check('Remote focus reaches Play/Pause', (await state()).focusAction === 'spotify.toggle', (await state()).focusAction);
+    await current.keyboard.press('Enter');
+    await current.waitForFunction(() => document.querySelector('[data-action="spotify.toggle"]').getAttribute('aria-label') === 'Play');
+    check('Pause sends PUT /me/player/pause with device_id and the in-memory token', same(log.controls, [{ method: 'PUT', path: '/v1/me/player/pause', device: 'qa-device-1', auth: 'Bearer qa-access-1' }]), log.controls.map(c => c.path));
+    await current.keyboard.press('ArrowUp'); await current.keyboard.press('Enter');
+    await current.waitForFunction(() => __tv.calls.some(c => c.id === 'rJeHak5zRg.Spotify'));
+    check('Open Spotify launches the Samsung Spotify app', (await current.evaluate(() => __tv.calls.slice(-1)[0])).id === 'rJeHak5zRg.Spotify');
+    await current.evaluate(() => window.dispatchEvent(new Event('focus')));
+    let stored = await leaks();
+    check('Storage holds only the refresh token; no token or code in storage or QA state', same(stored.keys, ['cleantv.spotify.v1.a']) && same(stored.data, ['{"refreshToken":"qa-refresh-1"}']) && !stored.stored && !stored.state, stored.keys);
+    const before = log.token.length;
+    await current.reload(); await ready(); await cardShown();
+    check('A reload stays linked: one refresh with the stored token, no new pairing', log.token.length === before + 1 && log.token[before].body.grant_type === 'refresh_token' && log.token[before].body.refresh_token === 'qa-refresh-1' && log.pair.length === 1);
+    check('The reloaded card shows the paused state', await current.locator('[data-action="spotify.toggle"]').getAttribute('aria-label') === 'Play');
+    // A refresh refused without invalid_grant keeps the stored token: as on Android, Sign out stays usable in reauth.
+    refuse = true; current.__expectedFailures.push(ACCOUNTS + '/api/token'); await current.reload(); await ready();
+    await current.waitForFunction(() => ShoreQA.state().spotify.webApi === 'reauth');
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.spotify'); await act('group.spotify');
+    text = await current.locator('#appearanceRows').innerText(); stored = await leaks();
+    check('Reauth with a stored token keeps Sign out enabled', /Sign in to Spotify again/.test(text) && same(stored.keys, ['cleantv.spotify.v1.a'])
+      && await current.locator('[data-action="spotify.signout"]').getAttribute('aria-disabled') !== 'true', text);
+    refuse = false; current.__expectedFailures.splice(current.__expectedFailures.indexOf(ACCOUNTS + '/api/token'), 1);
+    await current.reload(); await ready(); await cardShown();
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.spotify'); await act('group.spotify');
+    check('Account connected after the reload', /Account connected/.test(await current.locator('#appearanceRows').innerText()));
+    await act('spotify.signout'); await act('message.signout');
+    await current.waitForFunction(() => ShoreQA.state().spotify.webApi === 'unlinked');
+    stored = await leaks();
+    check('Sign out removes the stored sign-in', !stored.keys.length && /Not signed in/.test(await current.locator('#appearanceRows').innerText()), stored.keys);
+    check('Preflights went only to the routed fakes', log.preflights.every(o => [RELAY, ACCOUNTS, API].includes(o)), log.preflights);
   });
   await run('CleanTV widget slot geometry, ink and glass', async () => {
     // A queued test widget and a queued view, registered before main.js loads.
