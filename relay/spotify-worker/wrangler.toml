@@ -1,0 +1,25 @@
+# CleanTV Spotify pairing relay. Deploy from this folder: see README.md.
+name = "cleantv-spotify"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+preview_urls = false
+
+# Public values: PKCE needs no client secret, and none belongs here.
+[vars]
+CLIENT_ID = "6058b47c8aab44dd87826487377bdf6c"
+REDIRECT_URI = "https://cleantv-spotify.tobiaspsi96.workers.dev/callback"
+
+# One SQLite-backed Durable Object per pairing (available on the Workers Free plan). Not Workers KV:
+# KV caches a missing key at the edge for up to 60 s, which could hide a fresh code from the TV.
+[[durable_objects.bindings]]
+name = "PAIRINGS"
+class_name = "SpotifyPairing"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SpotifyPairing"]
+
+# Request logs would contain /callback URLs with the one-time code: keep Workers Logs off.
+[observability]
+enabled = false
