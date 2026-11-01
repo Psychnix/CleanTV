@@ -611,6 +611,7 @@ try {
           title: language => language === 'de' ? 'QA Notiz' : 'QA note settings',
           sections: () => [{ id: 'qa', title: 'QA <b>row</b>', horizontal: true, items: [
             { action: 'cleantv.qa.toggle', label: 'Bold', axis: 'qa', value: true, applied: !!window.__qaOn },
+            { action: 'cleantv.qa.location', label: 'Change location' },
             { action: 'settings.back', label: 'Spoofed host action' }] }],
           ok: item => { if (item.action !== 'cleantv.qa.toggle') return false; window.__qaOn = !window.__qaOn; window.__qaOk = (window.__qaOk || 0) + 1; return true; }
         });
@@ -646,6 +647,11 @@ try {
     await act('cleantv.qa.toggle');
     check('OK reaches the provider and the row reflects its state', await current.evaluate(() => window.__qaOk === 1 && document.querySelector('[data-action="cleantv.qa.toggle"]').getAttribute('aria-checked') === 'true'));
     check('Provider choices never change Home preferences', !Object.prototype.hasOwnProperty.call((await stored()), 'qa'));
+    const hint = () => current.locator('#appearanceDesc').innerText();
+    check('A radio provider row hints that OK applies it', (await state()).focusAction === 'cleantv.qa.toggle' && /Apply selected setting/.test(await hint()), await hint());
+    await nav('right');
+    const opener = await current.evaluate(() => !!document.querySelector('[data-action="cleantv.qa.location"] .setting-forward'));
+    check('A provider row without axis shows a chevron and the Open hint', (await state()).focusAction === 'cleantv.qa.location' && opener && /^OK\s*Open$/.test((await hint()).trim()), { focus: (await state()).focusAction, opener, hint: await hint() });
     await nav('back');
     s = await state();
     check('Back returns from add-on settings to the detail view', s.settingsGroup === 'addon-detail' && (await call('actions')).includes('addon.settings.note'), s.settingsGroup);
@@ -735,6 +741,63 @@ try {
     const calls = await current.evaluate(() => window.__widgetCalls.slice(-1)[0]);
     check('Widgets receive language, layout, background and visibility', same(Object.keys(calls).sort(), ['bg', 'language', 'layout', 'visible']) && calls.layout === 'list' && calls.bg === 'dark' && calls.visible === true, calls);
     check('Widget plates use no live filters', (await noLiveFilters()).length === 0, await noLiveFilters());
+  });
+  await run('CleanTV widgets beside text cards and after late data', async () => {
+    // One enabled text add-on in its stored slot, and a host widget whose data arrives after it registered.
+    const data = JSON.stringify({ installed: { note: { api: 1, id: 'note', name: 'Note', version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'A text card next to host widgets', enabled: true } }, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } });
+    const record = JSON.stringify({ v: 1, seq: 1, sum: createHash('sha256').update(data).digest('hex'), data });
+    await page({}, p => p.addInitScript(r => { if (!localStorage.getItem('cleantv.addons.v1.a')) localStorage.setItem('cleantv.addons.v1.a', r); }, record));
+    await scene('home');
+    await current.evaluate(() => {
+      window.CleanTVWidgets.register('late', { order: 1, render: (el, ctx) => { window.__late = el; window.__lateCtx = ctx; } });
+      window.CleanTVWidgets.refresh();
+    });
+    const fill = html => current.evaluate(h => { window.__late.innerHTML = h; }, html);
+    const refresh = () => current.evaluate(() => window.CleanTVWidgets.refresh());
+    const layout = () => current.evaluate(() => {
+      const box = e => { const r = e.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) }; };
+      const shown = sel => [...document.querySelectorAll(sel)].filter(e => e.getClientRects().length).map(box);
+      const slot = document.getElementById('cleantvWidgets'), card = slot.querySelector('[data-widget="late"]');
+      const move = card && /^translate(?:3d)?\((-?[0-9.]+)px, ?(-?[0-9.]+)px/.exec(card.querySelector('.cw-field').style.transform);
+      return { text: shown('#addonWidgets .addon-widget'), host: shown('#cleantvWidgets .cw-card'), slotBottom: Math.round(slot.getBoundingClientRect().bottom),
+        card: card && { hidden: card.hidden, shown: card.getClientRects().length > 0, left: card.offsetLeft + slot.offsetLeft, top: card.offsetTop + slot.offsetTop, right: Math.round(card.getBoundingClientRect().right), x: move && +move[1], y: move && +move[2] } };
+    });
+    const apart = g => g.text.length > 0 && g.host.length > 0 && g.text.every(a => g.host.every(b => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top));
+    const aligned = c => c.x === -c.left && c.y === -c.top;
+    let g = await layout();
+    check('A late widget without data keeps its card hidden', g.card && g.card.hidden && !g.card.shown && same(g.text.map(r => [r.left, r.top]), [[1000, 260]]), g);
+    await fill('<span class="cw-big">21°</span>');
+    check('Filling the element alone does not show the card', (await layout()).card.hidden);
+    await refresh();
+    g = await layout();
+    check('refresh() shows the filled card with its plate aligned', !g.card.hidden && g.card.shown && aligned(g.card), g.card);
+    await fill('<span class="cw-big">' + 'Leichter Regen und Wind '.repeat(8) + '</span>'); await refresh();
+    g = await layout();
+    check('A Dock card stays clear of the text cards at x 1000', g.card.right <= 980 && apart(g) && same(g.text.map(r => [r.left, r.top]), [[1000, 260]]) && aligned(g.card), g);
+    await look({ layout: 'list' }); await scene('home');
+    await fill('<span class="cw-big">21°</span>'); await refresh();
+    const narrow = (await layout()).card;
+    await fill('<span class="cw-big">21° Leichter Regen</span>'); await refresh();
+    g = await layout();
+    check('A List card that grows keeps its plate aligned after refresh()', g.card.left < narrow.left && g.card.right === 1780 && aligned(g.card), { narrow, card: g.card });
+    for (const [name, patch] of [['List', {}], ['List without the date', { dateVisible: false }], ['List with top controls', { controlsPosition: 'top' }]]) {
+      if (Object.keys(patch).length) { await call('preferences', patch); await scene('home'); }
+      g = await layout();
+      check(name + ': text cards stack right-aligned below the host widgets', apart(g) && g.text.every(r => r.right === 1780) && g.text[0].top === g.slotBottom, g);
+    }
+    await call('preferences', { controlsPosition: 'auto', dateVisible: true }); await scene('home');
+    await fill(''); await refresh();
+    g = await layout();
+    check('Without a visible host card the text cards keep their own place', g.host.length === 0 && same(g.text.map(r => [r.left, r.top]), [[1000, 260]]), g);
+    await current.evaluate(() => window.CleanTVWidgets.render({ visible: true, layout: 'dock', bg: 'bogus', language: 'xx' }));
+    const ctx = await current.evaluate(() => window.__lateCtx);
+    check('Widgets always receive the host context', same(ctx, { language: 'en', layout: 'list', bg: 'photo', visible: true }), ctx);
+    await fill('<span class="cw-big">21°</span>'); await refresh();
+    await scene('settings');
+    await fill(''); await refresh();
+    check('refresh() does nothing while a sheet is open', (await layout()).card.hidden === false);
+    await scene('home');
+    check('The next Home render picks up the change', (await layout()).card.hidden === true);
   });
   await run('Settings focus never changes the applied Home', async () => {
     await page();

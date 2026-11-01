@@ -790,6 +790,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000}
 .addon-empty p{margin-top:16px;font-size:24px;line-height:32px;color:var(--mute)}
 @media(prefers-reduced-motion:reduce){.addon-manager .setting-choice{transition:opacity 300ms cubic-bezier(.22,1,.36,1)}.addon-manager .setting-choice:active{transform:none}}
 #addonWidgets{position:absolute;left:1000px;top:260px;width:560px;pointer-events:none}
+/* In List, with host widgets on screen, main.js places these cards in the same column directly below them. */
+#addonWidgets.is-below-widgets{left:auto;right:140px}
 .addon-widget{border-radius:16px;background:rgba(24,24,24,.6);color:#fff;padding:24px;margin-bottom:16px}
 .addon-widget h3{font-size:24px;line-height:32px;margin:0 0 8px}
 .addon-widget p{font-size:36px;line-height:40px;margin:0;overflow-wrap:break-word}
@@ -812,6 +814,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000}
 .bg-dark,.bg-light{--cw-shadow:none;--cw-under:transparent}
 .cleantv-widgets{position:absolute;left:140px;top:260px;width:880px;display:flex;flex-direction:column;align-items:flex-start;pointer-events:none}
 .l-list .cleantv-widgets{left:auto;right:140px;align-items:flex-end}
+/* Dock cards end before x 980, clear of the text and clock cards at x 1000. */
+.l-dock .cw-card{max-width:840px}
 .cw-card{position:relative;max-width:880px;margin-bottom:16px;padding:20px 24px;border-radius:24px;overflow:hidden;color:var(--cw-ink);text-shadow:var(--cw-shadow)}
 .cw-glass{position:absolute;left:0;top:0;right:0;bottom:0;border-radius:inherit;overflow:hidden;transform:translateZ(0);-webkit-clip-path:inset(0 round 24px);clip-path:inset(0 round 24px)}
 .cw-field{position:absolute;left:0;top:0;width:1920px;height:1080px}

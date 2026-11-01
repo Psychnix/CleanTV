@@ -588,7 +588,7 @@
 
   /* ---------- CleanTV host interfaces (docs/addons.md, "CleanTV host interfaces") ---------- */
   // Modules loaded before main.js may leave window.X = {queue: [[...register arguments]]}; see Start.
-  var addonSettings = {}, widgets = {}, widgetCards = {}, views = {};
+  var addonSettings = {}, widgets = {}, widgetCards = {}, views = {}, widgetsRendering = false;
   function own(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
   /* A module error is reported asynchronously (legacy.js shows it on old TVs) and never stops Home. */
   function guarded(fn, fallback) { try { return fn(); } catch (e) { setTimeout(function () { throw e; }, 0); return fallback; } }
@@ -626,10 +626,18 @@
       if (!widget || typeof widget.render !== 'function') throw new Error('Widget needs render(): ' + id);
       widgets[id] = { order: typeof widget.order === 'number' && isFinite(widget.order) ? widget.order : 0, render: widget.render };
     },
-    render: function (ctx) { renderWidgets(ctx); }
+    /* renderHome's call. The host still hides the slot behind the expanded Spotify player. */
+    render: function (ctx) { renderWidgets(ctx); },
+    /* For a module whose data arrived later: renders the widgets again from host state, so card
+       visibility and plate alignment follow the new content. Nothing happens while a sheet is open. */
+    refresh: function () {
+      if (!S.c || widgetsRendering || V[top().id].sheet) return;
+      renderWidgets(widgetCtx(homeState(top())));
+      placeAddonCards();
+    }
   };
   function addonSettingsActive(id) {
-    var item = own(addonSettings, id) && ADDONS.state().installed[id];
+    var installed = ADDONS.state().installed, item = own(addonSettings, id) && own(installed, id) && installed[id];
     return !!(item && item.enabled !== false);
   }
   function addonSettingsTitle(t) {
@@ -654,6 +662,13 @@
       };
     }).filter(function (section) { return section.items.length; });
   }
+  /* OK hint: a radio choice applies, a row without `axis` opens something (it shows a forward chevron).
+     A provider may name its own hint, already in the current language, e.g. for a row that acts at once. */
+  function addonSettingsHint(item) {
+    var hint = item.source && item.source.hint;
+    if (typeof hint === 'string' && hint && hint.length <= 80) return translate(hint);
+    return translate(item.radio ? 'Apply selected setting' : 'Open');
+  }
   function addonSettingsOk(t, item) {
     var provider = addonSettings[t.addonId];
     if (provider && item.source && addonSettingsActive(t.addonId)) guarded(function () { return provider.ok(item.source); });
@@ -674,9 +689,16 @@
     card._field = card.firstChild.firstChild; card._img = card._field.firstChild; card._content = card.lastChild;
     return card;
   }
+  function widgetCtx(hs) { return { language: S.c.language, layout: S.c.layout, bg: S.c.bg, visible: hs.mode !== 'arrange' && !spotifyExpanded() }; }
   function renderWidgets(ctx) {
+    widgetsRendering = true;
+    try { drawWidgets(ctx); } finally { widgetsRendering = false; }
+  }
+  function drawWidgets(ctx) {
     var ids = Object.keys(widgets).sort(function (a, b) { return widgets[a].order - widgets[b].order || (a < b ? -1 : 1); });
     var photo = S.c.bg === 'photo' && !!S.shown, src = photo ? fieldSrc(S.shown.wall, S.shown.material) : '', top;
+    // The context always comes from host state; only `visible` is the caller's, and never behind the expanded player.
+    ctx = { language: S.c.language, layout: S.c.layout, bg: S.c.bg, visible: !!(ctx && ctx.visible) && !spotifyExpanded() };
     widgetSlot.hidden = !ctx.visible;
     // Without widgets nothing is measured, so Home renders exactly as before.
     if (!ids.length) return;
@@ -697,6 +719,21 @@
       if (card._img._src !== src) { card._img._src = src; if (src) card._img.src = src; else card._img.removeAttribute('src'); }
       if (photo) fieldTransform(card._field, widgetSlot.offsetLeft + card.offsetLeft, widgetSlot.offsetTop + card.offsetTop, card.offsetWidth, card.offsetHeight);
     });
+  }
+  /* In List both columns sit right of the app list: the text and clock cards (#addonWidgets, addons.js)
+     move directly below visible host widgets, so the two never overlap. Without host widgets, or in
+     Dock (cards end before x 1000), they keep their own place and nothing is measured. */
+  function placeAddonCards() {
+    var cards = document.getElementById('addonWidgets'), below = '', height;
+    if (!cards) return;
+    if (S.c.layout === 'list' && !cards.hidden && cards.firstChild && !widgetSlot.hidden && Object.keys(widgets).length) {
+      height = widgetSlot.offsetHeight;
+      if (height) below = widgetSlot.offsetTop + height + 'px';
+    }
+    if (cards._below === below) return;
+    cards._below = below;
+    cards.className = below ? 'is-below-widgets' : '';
+    cards.style.top = below;
   }
 
   /* ---------- Home (browse) ---------- */
@@ -1385,6 +1422,7 @@
     renderFocusStatus(t);
     renderSpotify();
     ADDONS.render(t.id === 'home' && !spotifyExpanded(), S.c.language);
+    placeAddonCards();
     syncSpotify();
     resolveVars();
     if (window.CleanFrameDesign) window.CleanFrameDesign.after({ view: t.id === 'appearance' ? 'appearance.' + t.group : t.id === 'message' ? 'message.' + t.msg : t.id, layout: S.c.layout, state: spotifyExpanded() ? 'expanded' : 'compact' });
@@ -1414,7 +1452,7 @@
     else { photoMode = null; renderDock(hs); }
     renderAppFocusName(hs);
     // Host widgets below the clock; hidden in arrange mode and behind the expanded Spotify player.
-    WIDGETS.render({ language: S.c.language, layout: S.c.layout, bg: S.c.bg, visible: hs.mode !== 'arrange' && !spotifyExpanded() });
+    WIDGETS.render(widgetCtx(hs));
   }
 
   function clockText() {
@@ -2006,7 +2044,7 @@
         + command({ action: 'settings.retry', label: translate('Try again') }, "<span>" + translate("Try again") + "</span>", 'setting-retry');
     }
     setHTML(appearanceStatus, status);
-    hint = selected.disabled ? '' : selected.action === 'settings.back' ? translate('Return to ') + (detailParentName()) : selected.action === 'settings.retry' ? translate('Retry this change') : selected.axis || t.group === 'addon-settings' ? translate('Apply selected setting') : selected.action === 'background.wallpaper' ? translate('Choose a wallpaper') : selected.action === 'background.rotation' ? translate('Choose a rotation interval') : translate('Open on the TV');
+    hint = selected.disabled ? '' : selected.action === 'settings.back' ? translate('Return to ') + (detailParentName()) : selected.action === 'settings.retry' ? translate('Retry this change') : t.group === 'addon-settings' ? addonSettingsHint(selected) : selected.axis ? translate('Apply selected setting') : selected.action === 'background.wallpaper' ? translate('Choose a wallpaper') : selected.action === 'background.rotation' ? translate('Choose a rotation interval') : translate('Open on the TV');
     if (selected.action === 'spotify.transparency') { setHTML(appearanceDesc, icon('left') + icon('right') + '<span>' + translate('Adjust with Left and Right') + '</span>'); return; }
     setHTML(appearanceDesc, hint ? '<span class="remote-key">OK</span><span>' + esc(hint) + '</span>' : '');
   }

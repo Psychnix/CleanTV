@@ -96,7 +96,7 @@ Outside a Samsung TV (browser preview, Android) these exist but report nothing i
 - When the add-on `id` is installed and enabled, its detail view (`addon-detail`) shows Settings (`addon.settings.<id>`). It opens appearance group `addon-settings` with `t.addonId`; Back returns to the detail view.
 - `title(lang)` → heading string. `sections(lang)` → the `detailSections` shape: `[{ id, title, horizontal, reason, items: [{ action, label, description, disabled, axis, value, applied }] }]`. Labels are already in `lang`; titles and labels are escaped.
 - Namespace actions, for example `cleantv.weather.toggle.wind`. Host prefixes (`settings.`, `addon.`, `group.`, `choice.`) are dropped.
-- An item with `axis` is a radio choice; `applied: true` shows its tick (a host addition, because the host does not know the provider's values). Provider items never change Home preferences.
+- An item with `axis` is a radio choice; `applied: true` shows its tick (a host addition, because the host does not know the provider's values). Its OK hint is "Apply selected setting". An item without `axis` shows a forward chevron and the hint "Open", for example a row whose `ok()` calls `open()`. An optional `hint` string (already in `lang`, at most 80 characters) replaces either, for example for a row that acts at once. Provider items never change Home preferences.
 - `ok(item)` receives the provider's own item object on OK; return `true` when handled. Up/Down/Left/Right move focus between rows and choices as in other appearance groups; disabled items are skipped.
 - Optional `key(t, k)` receives each key (`up`, `down`, `left`, `right`, `ok`, `back`) first; return `true` to stop the host's handling.
 - The Home preview stays visible next to the rows, and the host renders again after each key.
@@ -116,11 +116,13 @@ Outside a Samsung TV (browser preview, Android) these exist but report nothing i
 
 `register(id, { order: n, render: function (el, ctx) { … } })`
 
-- `#cleantvWidgets` is a sibling of `#caption` inside `#home`, outside `#phScene`. `renderHome` calls `CleanTVWidgets.render(ctx)` on every Home render, including the Settings preview.
+- `#cleantvWidgets` is a sibling of `#caption` inside `#home`, outside `#phScene`. `renderHome` calls `CleanTVWidgets.render(ctx)` on every Home render, including the Settings preview. The host builds the `ctx` the widgets receive from its own state and keeps the slot hidden behind the expanded Spotify player whatever `ctx.visible` says.
+- `refresh()`: call it after asynchronous data arrives or when the content changes size, instead of only changing `el`. It renders the widgets again from host state, which is the only way card visibility and the plate alignment follow the new content. It does nothing while a sheet or full-screen view is open, before the first render, or when called from inside a widget's `render`.
 - Each widget has one card, created once and kept, ordered by `order` and then ID. `render(el, ctx)` fills the card's content element; reuse what is already there. An empty `el` hides the card and its plate.
 - `ctx = { language, layout: 'dock' | 'list', bg: 'photo' | 'dark' | 'light', visible }`. `visible` is false in arrange mode and while the Spotify player is expanded; the slot is then hidden.
 - Geometry: Dock left 140, top 260 (220 without the date). List right-aligned to the clock's right edge (x 1780), top 300 (260 without the date); with List and Controls position Top right it sits 40px below the controls.
-- Cards stack with a 16px gap and are at most 880px wide.
+- Cards stack with a 16px gap. They are at most 840px wide in Dock, so they end before the text and clock cards at x 1000, and at most 880px wide in List.
+- Text and clock add-on cards (`#addonWidgets`) keep their place (x 1000, top 260) while no host card is visible. In List with visible host cards they move into the same right-aligned column, directly below the host cards, so the two never overlap.
 
 Card and type contract (style.css):
 
