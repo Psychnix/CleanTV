@@ -1444,6 +1444,186 @@ try {
     await nav('back'); await library();
     check('Browser All Apps has no installed fixtures', /TV/.test(await current.locator('#stage').innerText()) && !(await current.locator('[data-action^="apps.open."]').count()));
   });
+  await run('Add-on wallpapers: streamed picker, favourites, rotation, reload and removal', async () => {
+    const BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', CATALOG_URL = BASE + 'cleantv-catalog.json', INDEX_URL = BASE + 'cleantv-wallpapers/index.json';
+    const cors = { 'access-control-allow-origin': '*' };
+    const FILES = { jpg: 'image.jpg', thumb: 'thumb.jpg', panel: 'panel.jpg', 'study-soft': 'study-soft.jpg', 'field-blur': 'field-blur.jpg', 'field-frost': 'field-frost.jpg', 'field-clear': 'field-clear.jpg' };
+    const asset = (id, role) => root + 'app/assets/' + (role === 'jpg' ? 'wallpapers/' + id + '.jpg' : role === 'thumb' || role === 'panel' ? 'wallpapers/' + id + '-' + role + '.jpg' : 'materials/' + id + '-' + role + '.jpg');
+    // Bundled JPEGs stand in for generated output under add-on IDs; twelve photos, so a favourite can be the eleventh.
+    const named = [['aw-berg', 'Berg am See', 'summit'], ['aw-see', 'Stiller See', 'alpine'], ['aw-tal', 'Weites Tal', 'amber']];
+    // The longest title the generator and the module allow: 120 characters from a file name.
+    const LONG = 'Sonnenuntergang ueber dem Wattenmeer bei Ebbe mit Prielen Moewen und einem einsamen Leuchtturm am fernen Horizont Herbst';
+    const photos = named.concat(Array.from({ length: 9 }, (_, i) => ['aw-extra-' + (i + 1), i === 8 ? LONG : 'Extra ' + (i + 1), 'mint'])).map(([id, title, from]) => {
+      const bytes = Object.fromEntries(Object.keys(FILES).map(role => [role, readFileSync(asset(from, role))]));
+      const files = Object.fromEntries(Object.entries(bytes).map(([role, data]) => [role, { path: 'cleantv-wallpapers/generated/' + id + '/' + FILES[role], size: data.length, sha256: createHash('sha256').update(data).digest('hex') }]));
+      return { id, title, bytes, entry: { id, title, rev: files.jpg.sha256.slice(0, 12), tone: 'light', ut: { tr: 'mist', br: 'light' }, frostVeil: 0.2, files } };
+    });
+    const pkg = { api: 1, id: 'cleantv-wallpapers', name: 'Wallpapers', version: '1.0.0', kind: 'wallpapers', description: 'Own photos', author: 'QA', license: 'MIT', index: 'cleantv-wallpapers/index.json' };
+    const listing = { ...pkg, path: 'cleantv-packages/cleantv-wallpapers/1.0.0.json', sha256: createHash('sha256').update(JSON.stringify(pkg)).digest('hex') };
+    const requests = [];
+    const serve = async p => {
+      p.on('request', request => { if (request.url().startsWith(BASE)) requests.push({ url: request.url(), type: request.resourceType() }); });
+      await p.route(CATALOG_URL, route => route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify({ api: 2, addons: [listing] }) }));
+      await p.route(BASE + listing.path, route => route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify(pkg) }));
+      await p.route(INDEX_URL, route => route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify({ api: 1, entries: photos.map(x => x.entry) }) }));
+      await p.route(BASE + 'cleantv-wallpapers/generated/**', route => {
+        const [id, file] = route.request().url().split('/').slice(-2), photo = photos.find(x => x.id === id), role = Object.keys(FILES).find(r => FILES[r] === file);
+        // Stiller See streams but cannot be downloaded, so rotation must skip it.
+        if (!photo || !role || id === 'aw-see' && route.request().resourceType() !== 'image') return route.fulfill({ status: 404, headers: cors, body: 'missing' });
+        return route.fulfill({ status: 200, contentType: 'image/jpeg', headers: cors, body: photo.bytes[role] });
+      });
+    };
+    const downloads = () => requests.filter(r => r.type !== 'image' && r.url.includes('/generated/'));
+    const thumbs = () => requests.filter(r => r.url.endsWith('/thumb.jpg')).map(r => r.url.split('/').slice(-2)[0]);
+    const storedCopy = id => current.waitForFunction(id => window.CleanTVWallpapers.stored(id), id, { timeout: 20000 });
+    const hint = () => current.locator('#appearanceDesc').innerText();
+    const starred = () => current.evaluate(() => [...document.querySelectorAll('.wallpaper-star[aria-checked="true"]')].map(e => e.getAttribute('data-action').slice(15)));
+    await page({ minuteMs: 120 }, serve);
+    check('Startup without the add-on sends no wallpaper request', requests.length === 0, requests);
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
+    current.__expectedFailures.push('/generated/aw-see/');
+    await scene('settings'); await act('settings.group.addons'); await act('addon.tab.discover'); await act('addon.refresh');
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.details.cleantv-wallpapers"]'));
+    await act('addon.details.cleantv-wallpapers'); await act('addon.install.cleantv-wallpapers');
+    await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    const ids = await current.evaluate(() => CleanFrameWallpapers.map(w => w.id));
+    check('Install fetches the index once and appends the add-on photos after the built-ins', same(ids, walls.map(w => w.id).concat(photos.map(x => x.id))) && requests.filter(r => r.url === INDEX_URL).length === 1 && !downloads().length, { ids, requests });
+
+    await wallpaper();
+    const names = await current.locator('.wallpaper-choice .setting-name').allTextContents();
+    check('The picker names every photo, add-on titles as they are', same(names, walls.map(w => w.name).concat(photos.map(x => x.title))), names);
+    check('Hidden add-on rows stream no thumbnail', !thumbs().length, thumbs());
+    await nav('right');
+    check('Right moves from a photo to its star', (await state()).focusAction === 'wallpaper.star.' + walls[0].id && (await call('where')).focusCount === 1 && /Add to favourites/.test(await hint()), { focus: (await state()).focusAction, hint: await hint() });
+    await nav('ok');
+    check('OK stars the photo and saves the favourite', same((await stored()).favourites, [walls[0].id]) && same(await starred(), [walls[0].id]) && /Remove from favourites/.test(await hint()));
+    await nav('ok');
+    check('OK again removes the star', same((await stored()).favourites, []) && same(await starred(), []));
+    await nav('down'); await wallpaperSettled(walls[1].id);
+    check('Up and Down keep the star column while browsing', (await state()).focusAction === 'wallpaper.star.' + walls[1].id && (await state()).wallpaperPicker.candidate === walls[1].id);
+    await nav('left');
+    check('Left returns from the star to its photo', (await state()).focusAction === 'wallpaper.choose.' + walls[1].id);
+    const geometry = await current.evaluate(() => [...document.querySelectorAll('.wallpaper-choice')].filter(r => getComputedStyle(r).visibility !== 'hidden').map(row => {
+      const r = row.getBoundingClientRect(), star = row.querySelector('.wallpaper-star').getBoundingClientRect(), name = row.querySelector('.setting-name').getBoundingClientRect(), tick = row.querySelector('.setting-tick').getBoundingClientRect();
+      return star.left >= r.left && star.right <= r.right && star.top >= r.top && star.bottom <= r.bottom && name.right <= star.left && tick.right <= star.left;
+    }));
+    check('Each visible star sits inside its row, right of the name and tick', geometry.length >= 5 && geometry.every(Boolean), geometry);
+
+    // To Berg am See (row 16): only rows that become visible stream their thumbnails.
+    await nav(...Array(14).fill('down')); await wallpaperSettled('aw-berg');
+    check('Only visible add-on rows stream thumbnails', same(thumbs(), ['aw-berg']), thumbs());
+    check('A browsed add-on photo streams and saves nothing', (await state()).shown.wall === 'aw-berg' && (await stored()).wallpaper === walls[0].id && !downloads().length
+      && (await wallpaperBundle()).photo === BASE + 'cleantv-wallpapers/generated/aw-berg/image.jpg', await wallpaperBundle());
+    await nav('ok'); await ready();
+    check('OK applies the add-on photo', (await state()).committed.wall === 'aw-berg' && same(await wallpaperApplied(), ['wallpaper.choose.aw-berg']));
+    await storedCopy('aw-berg');
+    check('Only the chosen photo is downloaded: seven verified files', same(downloads().map(r => r.url.split('/').slice(-2).join('/')).sort(), Object.values(FILES).map(f => 'aw-berg/' + f).sort()), downloads());
+    await nav('right', 'ok');
+    await nav(...Array(6).fill('up')); await wallpaperSettled('summit'); await nav('ok');
+    await nav(...Array(7).fill('down')); await wallpaperSettled('aw-see'); await nav('ok');
+    check('Stars mark add-on and built-in photos alike, in starring order', same((await stored()).favourites, ['aw-berg', 'summit', 'aw-see']), (await stored()).favourites);
+    await nav('back'); await ready();
+    check('Back keeps the applied add-on photo', (await state()).shown.wall === 'aw-berg');
+
+    // Rotation over favourites, in WALLS order, skipping Stiller See (no local copy).
+    await act('background.rotation'); await act('rotation.5');
+    check('The rotation reason explains favourites', /favourites/.test(await current.locator('#appearanceRows').innerText()));
+    await scene('home');
+    const seen = [];
+    for (let i = 0; i < 4; i++) {
+      const before = (await state()).wallpaper;
+      await current.waitForFunction(id => ShoreQA.state().wallpaper !== id && !ShoreQA.state().pending, before, { timeout: 8000 });
+      seen.push((await state()).wallpaper);
+    }
+    check('Rotation alternates over the available favourites only', same(seen, ['summit', 'aw-berg', 'summit', 'aw-berg']), seen);
+    await current.waitForFunction(() => ShoreQA.state().wallpaper === 'aw-berg' && !ShoreQA.state().pending);
+    check('A stored add-on photo rotates in from its local copy', (await wallpaperBundle()).photo.startsWith('blob:'), await wallpaperBundle());
+    check('Rotation tried to keep the add-on favourites locally', downloads().some(r => r.url.includes('/aw-see/')) && !(await current.evaluate(() => window.CleanTVWallpapers.stored('aw-see'))));
+
+    // An eleventh add-on favourite keeps its star but gets the storage hint.
+    await call('preferences', { mode: 'fixed', wall: 'aw-berg', favourites: photos.slice(3).map(x => x.id).concat(['aw-berg']) }); await ready();
+    await call('preferences', { mode: '60' });
+    await wallpaper();
+    await nav('down'); await wallpaperSettled('aw-see'); await nav('right', 'ok');
+    const eleventh = await stored();
+    check('An eleventh add-on favourite is starred with a hint that ten are kept', eleventh.favourites.length === 11 && eleventh.favourites.at(-1) === 'aw-see' && /At most 10 add-on favourites/.test(await current.locator('#appearanceStatus').innerText()), eleventh.favourites);
+    await nav('left');
+    check('The hint disappears with the next key', !/At most 10/.test(await current.locator('#appearanceStatus').innerText()));
+    await nav('back'); await ready();
+    await act('background.rotation'); await act('rotation.fixed');
+    await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote && w.id !== ShoreQA.state().committed.wall && window.CleanTVWallpapers.stored(w.id)), null, { timeout: 20000 });
+    check('Rotation off keeps only the chosen add-on photo locally; the stars stay', (await stored()).favourites.length === 11 && await current.evaluate(() => CleanFrameWallpapers.filter(w => w.remote && window.CleanTVWallpapers.stored(w.id)).map(w => w.id).join()) === (await state()).committed.wall);
+
+    // Reload: the saved add-on ID survives start-up validation and its local copy needs no network.
+    await look({ wall: 'aw-berg' }); await storedCopy('aw-berg');
+    current.__allowExternal = []; const count = requests.length;
+    await current.reload(); await ready(); await current.waitForLoadState('networkidle');
+    check('After a reload the add-on photo is still chosen and shown from its local copy', (await state()).committed.wall === 'aw-berg' && (await wallpaperBundle()).photo.startsWith('blob:') && requests.length === count, { bundle: await wallpaperBundle(), requests: requests.slice(count) });
+    check('Favourites survive the reload', (await stored()).favourites.length === 11);
+
+    // A 120-character add-on title ends with an ellipsis wherever the chosen photo is named, and wraps in the picker status.
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
+    await look({ wall: 'aw-extra-9' });
+    const clipped = (name, limit) => current.evaluate(([name, limit]) => {
+      const el = document.querySelector(name), edge = document.querySelector(limit), style = getComputedStyle(el), box = el.getBoundingClientRect(), range = document.createRange();
+      range.selectNodeContents(el);
+      // Text past its box stays visible unless overflow clips it.
+      const right = style.overflowX === 'visible' ? Math.max(box.right, range.getBoundingClientRect().right) : box.right;
+      return { text: el.textContent, right, limit: edge.getBoundingClientRect().left, ellipsis: el.scrollWidth > el.clientWidth && style.textOverflow === 'ellipsis' };
+    }, [name, limit]);
+    await group('background');
+    const detailRow = await clipped('.section-wall .setting-name', '.section-wall .setting-forward');
+    check('A long add-on title ends with an ellipsis before the chevron of the Background row', detailRow.text === LONG && detailRow.right <= detailRow.limit + 0.5 && detailRow.ellipsis, detailRow);
+    await scene('settings');
+    const overviewRow = await clipped('.settings-group[data-id="background"] .settings-group-value', '.settings-group[data-id="background"] > .ico');
+    check('A long add-on title ends with an ellipsis before the chevron in the Settings overview', overviewRow.text === LONG && overviewRow.right <= overviewRow.limit + 0.5 && overviewRow.ellipsis, overviewRow);
+    await wallpaper();
+    const caption = await current.evaluate(() => {
+      const status = document.getElementById('appearanceStatus').getBoundingClientRect(), name = document.querySelector('.wallpaper-preview-name').getBoundingClientRect();
+      const row = document.querySelector('[data-action="wallpaper.choose.aw-extra-9"]'), title = row.querySelector('.setting-name'), style = getComputedStyle(title);
+      return { status: [status.left, status.right, status.bottom], name: [name.left, name.right, name.bottom], rowName: title.getBoundingClientRect().right, star: row.querySelector('.wallpaper-star').getBoundingClientRect().left,
+        rowEllipsis: title.scrollWidth > title.clientWidth && style.overflowX === 'hidden' && style.textOverflow === 'ellipsis' };
+    });
+    check('In the picker a long title wraps inside the status and ends with an ellipsis before the star',
+      caption.name[0] >= caption.status[0] && caption.name[1] <= caption.status[1] && caption.status[2] <= 1080 && caption.rowName <= caption.star && caption.rowEllipsis, caption);
+    await nav('back'); await ready();
+
+    // Removal switches to the first built-in favourite first, then removes the entries and their data.
+    await call('preferences', { favourites: ['summit', 'aw-berg'] });
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.remove.cleantv-wallpapers');
+    check('The removal dialog names the wallpapers', /Its wallpapers and stored photos are removed/.test(await current.locator('#sheet').innerText()));
+    await act('message.addonRemove');
+    await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote), null, { timeout: 15000 });
+    const after = await current.evaluate(async () => ({ wall: ShoreQA.state().committed.wall, keys: Object.keys(localStorage).filter(k => k.startsWith('cleantv.wallpapers')), dbs: indexedDB.databases ? (await indexedDB.databases()).map(d => d.name) : [] }));
+    check('Removal keeps a built-in photo and leaves no add-on data', after.wall === 'summit' && !after.keys.length && !after.dbs.includes('cleantv-wallpapers'), after);
+
+    // With Background Dark or Light the last applied add-on photo is not shown: Disable and removal finish at once.
+    const reinstall = async () => {
+      await scene('settings'); await act('settings.group.addons'); await act('addon.tab.discover'); await act('addon.refresh');
+      await current.waitForFunction(() => document.querySelector('[data-action="addon.details.cleantv-wallpapers"]'));
+      await act('addon.details.cleantv-wallpapers'); await act('addon.install.cleantv-wallpapers');
+      await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    };
+    const leftAddon = async () => {
+      const gone = await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote), null, { timeout: 15000 }).then(() => true, () => false);
+      return current.evaluate(async gone => ({ gone, wall: ShoreQA.state().committed.wall, bg: ShoreQA.state().committed.bg, remote: CleanFrameWallpapers.filter(w => w.remote).length,
+        keys: Object.keys(localStorage).filter(k => k.startsWith('cleantv.wallpapers')), dbs: indexedDB.databases ? (await indexedDB.databases()).map(d => d.name) : [] }), gone);
+    };
+    const darkAddonPhoto = async () => {
+      await look({ bg: 'photo', wall: 'aw-berg' }); await storedCopy('aw-berg');
+      await look({ bg: 'dark' });
+    };
+    await reinstall(); await darkAddonPhoto();
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.toggle.cleantv-wallpapers');
+    const disabled = await leftAddon();
+    check('Disable with Background Dark leaves the add-on photos and keeps their data', disabled.gone && walls.some(w => w.id === disabled.wall) && disabled.bg === 'dark' && disabled.keys.length > 0 && disabled.dbs.includes('cleantv-wallpapers'), disabled);
+    await act('addon.toggle.cleantv-wallpapers');
+    await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    await darkAddonPhoto();
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.remove.cleantv-wallpapers'); await act('message.addonRemove');
+    const removed = await leftAddon();
+    check('Removal with Background Dark finishes: a built-in photo, no entries, no record and no database', removed.gone && walls.some(w => w.id === removed.wall) && removed.bg === 'dark' && !removed.keys.length && !removed.dbs.includes('cleantv-wallpapers'), removed);
+  });
   section = 'Run integrity';
   report.sourceAfter = hashes();
   check('No unexpected browser/resource failures', report.pageErrors.length === 0, report.pageErrors);
