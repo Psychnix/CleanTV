@@ -1263,7 +1263,9 @@ try {
     const asset = (id, role) => root + 'app/assets/' + (role === 'jpg' ? 'wallpapers/' + id + '.jpg' : role === 'thumb' || role === 'panel' ? 'wallpapers/' + id + '-' + role + '.jpg' : 'materials/' + id + '-' + role + '.jpg');
     // Bundled JPEGs stand in for generated output under add-on IDs; twelve photos, so a favourite can be the eleventh.
     const named = [['aw-berg', 'Berg am See', 'summit'], ['aw-see', 'Stiller See', 'alpine'], ['aw-tal', 'Weites Tal', 'amber']];
-    const photos = named.concat(Array.from({ length: 9 }, (_, i) => ['aw-extra-' + (i + 1), 'Extra ' + (i + 1), 'mint'])).map(([id, title, from]) => {
+    // The longest title the generator and the module allow: 120 characters from a file name.
+    const LONG = 'Sonnenuntergang ueber dem Wattenmeer bei Ebbe mit Prielen Moewen und einem einsamen Leuchtturm am fernen Horizont Herbst';
+    const photos = named.concat(Array.from({ length: 9 }, (_, i) => ['aw-extra-' + (i + 1), i === 8 ? LONG : 'Extra ' + (i + 1), 'mint'])).map(([id, title, from]) => {
       const bytes = Object.fromEntries(Object.keys(FILES).map(role => [role, readFileSync(asset(from, role))]));
       const files = Object.fromEntries(Object.entries(bytes).map(([role, data]) => [role, { path: 'cleantv-wallpapers/generated/' + id + '/' + FILES[role], size: data.length, sha256: createHash('sha256').update(data).digest('hex') }]));
       return { id, title, bytes, entry: { id, title, rev: files.jpg.sha256.slice(0, 12), tone: 'light', ut: { tr: 'mist', br: 'light' }, frostVeil: 0.2, files } };
@@ -1371,8 +1373,34 @@ try {
     check('After a reload the add-on photo is still chosen and shown from its local copy', (await state()).committed.wall === 'aw-berg' && (await wallpaperBundle()).photo.startsWith('blob:') && requests.length === count, { bundle: await wallpaperBundle(), requests: requests.slice(count) });
     check('Favourites survive the reload', (await stored()).favourites.length === 11);
 
-    // Removal switches to the first built-in favourite first, then removes the entries and their data.
+    // A 120-character add-on title ends with an ellipsis wherever the chosen photo is named, and wraps in the picker status.
     current.__allowExternal = ['https://raw.githubusercontent.com'];
+    await look({ wall: 'aw-extra-9' });
+    const clipped = (name, limit) => current.evaluate(([name, limit]) => {
+      const el = document.querySelector(name), edge = document.querySelector(limit), style = getComputedStyle(el), box = el.getBoundingClientRect(), range = document.createRange();
+      range.selectNodeContents(el);
+      // Text past its box stays visible unless overflow clips it.
+      const right = style.overflowX === 'visible' ? Math.max(box.right, range.getBoundingClientRect().right) : box.right;
+      return { text: el.textContent, right, limit: edge.getBoundingClientRect().left, ellipsis: el.scrollWidth > el.clientWidth && style.textOverflow === 'ellipsis' };
+    }, [name, limit]);
+    await group('background');
+    const detailRow = await clipped('.section-wall .setting-name', '.section-wall .setting-forward');
+    check('A long add-on title ends with an ellipsis before the chevron of the Background row', detailRow.text === LONG && detailRow.right <= detailRow.limit + 0.5 && detailRow.ellipsis, detailRow);
+    await scene('settings');
+    const overviewRow = await clipped('.settings-group[data-id="background"] .settings-group-value', '.settings-group[data-id="background"] > .ico');
+    check('A long add-on title ends with an ellipsis before the chevron in the Settings overview', overviewRow.text === LONG && overviewRow.right <= overviewRow.limit + 0.5 && overviewRow.ellipsis, overviewRow);
+    await wallpaper();
+    const caption = await current.evaluate(() => {
+      const status = document.getElementById('appearanceStatus').getBoundingClientRect(), name = document.querySelector('.wallpaper-preview-name').getBoundingClientRect();
+      const row = document.querySelector('[data-action="wallpaper.choose.aw-extra-9"]'), title = row.querySelector('.setting-name'), style = getComputedStyle(title);
+      return { status: [status.left, status.right, status.bottom], name: [name.left, name.right, name.bottom], rowName: title.getBoundingClientRect().right, star: row.querySelector('.wallpaper-star').getBoundingClientRect().left,
+        rowEllipsis: title.scrollWidth > title.clientWidth && style.overflowX === 'hidden' && style.textOverflow === 'ellipsis' };
+    });
+    check('In the picker a long title wraps inside the status and ends with an ellipsis before the star',
+      caption.name[0] >= caption.status[0] && caption.name[1] <= caption.status[1] && caption.status[2] <= 1080 && caption.rowName <= caption.star && caption.rowEllipsis, caption);
+    await nav('back'); await ready();
+
+    // Removal switches to the first built-in favourite first, then removes the entries and their data.
     await call('preferences', { favourites: ['summit', 'aw-berg'] });
     await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.remove.cleantv-wallpapers');
     check('The removal dialog names the wallpapers', /Its wallpapers and stored photos are removed/.test(await current.locator('#sheet').innerText()));
