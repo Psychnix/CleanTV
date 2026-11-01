@@ -93,7 +93,7 @@ def parse_debug_port(output):
 
 def capture(state):
     """Draft import from one mirrored state: preferences, design, Home app records, add-ons, add-on photos."""
-    from editor_server import PREF_KEYS
+    from editor_server import PREF_KEYS, OPTIONAL_PREF_KEYS
     if not isinstance(state, dict) or state.get('ready') is not True:
         raise ValueError('CleanTV ist am Fernseher noch nicht bereit. Bitte kurz warten und erneut versuchen.')
     view = state.get('state') if isinstance(state.get('state'), dict) else {}
@@ -113,7 +113,11 @@ def capture(state):
     addons = [{key: item[key] for key in ADDON_FIELDS if key in item} for item in installed.values() if isinstance(item, dict)][:100]
     entries = ((state.get('walls') or {}).get('entries') or [])[:200]
     wallpapers = [{key: entry[key] for key in WALL_FIELDS if key in entry} for entry in entries if isinstance(entry, dict) and not entry.get('gone')]
-    return dict(platform='tizen', version=version, preferences={key: copy.deepcopy(committed[key]) for key in PREF_KEYS},
+    preferences = {key: copy.deepcopy(committed[key]) for key in PREF_KEYS}
+    for key in OPTIONAL_PREF_KEYS:
+        if key in committed:
+            preferences[key] = copy.deepcopy(committed[key])
+    return dict(platform='tizen', version=version, preferences=preferences,
                 design=copy.deepcopy(state['design']), apps=apps, addons=addons, wallpapers=wallpapers)
 
 

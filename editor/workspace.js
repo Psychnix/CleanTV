@@ -44,6 +44,7 @@ export function initWorkspace(api){
    pair('Übertragung',tv.releaseMessage);pair('Geprüft',new Date(tv.checkedAt*1000).toLocaleTimeString('de-DE'));
    $('tvDetails').replaceChildren(dl);$('connectTv').disabled=!tv.configured;
    $('restartDebug').hidden=!samsung;$('restartDebug').disabled=!tv.connected||debugBusy;$('tvNote').textContent=samsung?SAMSUNG_NOTE:ANDROID_NOTE;
+   $('prepare').hidden=samsung;  // Samsung builds are installed with npm run tv:install, not prepared here (#14).
    if(live&&was!==samsung)source(true);
   }catch(error){$('tvStatus').querySelector('span').textContent='TV Status nicht erreichbar';$('tvStatus').className='connection offline';$('tvDetails').textContent=error.message;}
   finally{tvBusy=false;}

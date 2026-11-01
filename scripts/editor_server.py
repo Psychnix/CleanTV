@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import subprocess
@@ -16,7 +17,18 @@ from urllib.parse import urlsplit, parse_qs
 from preview import Preview, PreviewServer, ROOT
 
 PREF_KEYS = 'bg wall layout apps font controls focus material mode clockFormat dateVisible spotifyEnabled spotifySurface spotifyTransparency controlsPosition language home'.split()
+# Present only on newer builds; imported when the TV reports it, absent otherwise (not required).
+OPTIONAL_PREF_KEYS = ['favourites']
+FAVOURITE_ID = re.compile(r'^[a-z0-9-]{1,40}$')
 DEFAULT_PREFS = dict(bg='photo',wall='summit',layout='dock',apps='icons',font='manrope',controls='text',focus='glass',material='tint',mode='fixed',clockFormat='12h',dateVisible=True,spotifyEnabled=True,spotifySurface='cover',spotifyTransparency=60,controlsPosition='top',language='de',home=['youtube','netflix','primevideo','spotify','appletv'])
+
+def clean_favourites(value):
+    """The wallpaper rotation list: unique, well-formed wallpaper ids (built-in or add-on), at most 256."""
+    if not isinstance(value,list): return []
+    out=[]
+    for item in value:
+        if isinstance(item,str) and FAVOURITE_ID.match(item) and item not in out and len(out)<256: out.append(item)
+    return out
 
 def encode(value): return json.dumps(value,ensure_ascii=False,indent=2).encode('utf-8')
 def atomic(path, value):
@@ -27,7 +39,7 @@ def atomic(path, value):
     os.replace(tmp,path)
 def initial(storage):
     prefs=DEFAULT_PREFS.copy(); baseline=storage/'baseline.json'
-    if baseline.exists(): prefs.update({k:v for k,v in json.loads(baseline.read_text()).items() if k in PREF_KEYS})
+    if baseline.exists(): prefs.update({k:v for k,v in json.loads(baseline.read_text()).items() if k in PREF_KEYS or k in OPTIONAL_PREF_KEYS})
     captured=json.loads((storage/'baseline-metadata.json').read_text()).get('capturedAt') if (storage/'baseline-metadata.json').exists() else time.strftime('%Y-%m-%dT%H:%M:%S%z')
     return dict(version=1,basePrefs=prefs.copy(),preferences=prefs,baseCapturedAt=captured,design=json.loads((ROOT/'app/design.json').read_text()),ui=dict(view='home',state='compact',scenario='playing',resolution=1080,selection='',snap=True,mode='edit',scope='element'),undo=[],redo=[])
 def fingerprint():
@@ -90,6 +102,8 @@ class Store:
             stamp = time.strftime('%Y-%m-%dT%H:%M:%S%z')
             updated = copy.deepcopy(project)
             prefs = {key: captured['preferences'][key] for key in PREF_KEYS}
+            if 'favourites' in captured['preferences']:
+                prefs['favourites'] = clean_favourites(captured['preferences']['favourites'])
             updated.update(design=captured['design'], preferences=prefs, basePrefs=copy.deepcopy(prefs),
                            baseCapturedAt=stamp, guides=[], undo=[], redo=[],
                            tvSource=dict(version=captured['version'], apps=captured['apps'], addons=captured['addons']))
@@ -235,6 +249,9 @@ class Editor(Preview):
                     if len(ident)!=32 or any(c not in '0123456789abcdef' for c in ident):raise ValueError('Unbekannter Zwischenstand.')
                     restored=json.loads((store.path/'snapshots'/f'{ident}.json').read_text())['project'];validate(restored);return self.json({'project':restored})
                 if route=='/api/editor/prepare':
+                    if store.platform=='tizen':
+                        from editor_tizen import RELEASE
+                        raise ValueError(RELEASE)
                     if store.job:
                         status=json.loads((store.path/'releases'/store.job/'status.json').read_text())
                         if status['state'] in ['freezing','checking','building']:return self.json({'error':'Eine TV-Version wird bereits vorbereitet.'},409)

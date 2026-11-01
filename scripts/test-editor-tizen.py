@@ -546,7 +546,7 @@ class TizenBackendTests(unittest.TestCase):
             result = self.store.import_tv(etag)
         project, _ = self.store.read()
         committed = STATE['state']['committed']
-        self.assertEqual(project['preferences'], {key: committed[key] for key in PREF_KEYS})
+        self.assertEqual(project['preferences'], dict({key: committed[key] for key in PREF_KEYS}, favourites=committed['favourites']))
         self.assertEqual(project['basePrefs'], project['preferences'])
         source = project['tvSource']
         self.assertEqual(source['platform'], 'tizen')
@@ -561,6 +561,35 @@ class TizenBackendTests(unittest.TestCase):
         self.assertEqual(len(fake.expressions), 1)
         self.assertEqual(len(self.forward_creates()), len(self.forward_removes()), 'The import forward is removed')
         self.assertEqual(self.tv.open_forwards, set())
+
+    def test_import_keeps_the_samsung_favourites(self):
+        fake = self.inspector([json.dumps(state(state__committed__favourites=['mint', 'summit', 'aw-test']))])
+        self.remember_forward(remote=48283)
+        _, etag = self.store.read()
+        with patch.object(self.tv, 'free_port', return_value=fake.port), \
+             patch.object(self.tv, 'inspector', return_value=dict(target=dict(id='page1', ws='/devtools/page/page1'))):
+            self.store.import_tv(etag)
+        prefs = self.store.read()[0]['preferences']
+        self.assertEqual(prefs['favourites'], ['mint', 'summit', 'aw-test'], 'The rotation list is imported')
+        self.assertEqual(self.store.read()[0]['basePrefs']['favourites'], ['mint', 'summit', 'aw-test'])
+
+    def test_import_without_favourites_is_accepted(self):
+        value = state()
+        del value['state']['committed']['favourites']
+        fake = self.inspector([json.dumps(value)])
+        self.remember_forward(remote=48283)
+        _, etag = self.store.read()
+        with patch.object(self.tv, 'free_port', return_value=fake.port), \
+             patch.object(self.tv, 'inspector', return_value=dict(target=dict(id='page1', ws='/devtools/page/page1'))):
+            self.store.import_tv(etag)
+        self.assertNotIn('favourites', self.store.read()[0]['preferences'], 'An older build without favourites still imports')
+
+    def test_favourites_are_sanitised(self):
+        from editor_server import clean_favourites
+        self.assertEqual(clean_favourites(['mint', 'MINT', 'aw-test', 'mint', '', 'bad id', 123, 'aw-x']),
+                         ['mint', 'aw-test', 'aw-x'])
+        self.assertEqual(clean_favourites('nope'), [])
+        self.assertEqual(clean_favourites(['x' * 41]), [])
 
     def test_import_uses_the_running_mirror_instead_of_a_second_client(self):
         _, etag = self.store.read()
@@ -657,6 +686,20 @@ class TizenRouteTests(unittest.TestCase):
         self.assertIn('/editor/tv-mirror.js', draft)
         self.assertIn('"mode":"draft"', draft.replace(' ', ''))
         self.assertNotIn('/editor/mock.js', draft)
+
+    def test_prepare_is_refused_on_samsung(self):
+        base, store = self.serve('tizen')
+        body = json.dumps({'etag': store.read()[1]}).encode()
+        request = urllib.request.Request(base + '/api/editor/prepare', data=body, method='POST',
+                                         headers={'Content-Type': 'application/json', 'Origin': base, 'X-CleanFrame-Token': store.token})
+        try:
+            urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10)
+            self.fail('prepare must be refused on Samsung')
+        except urllib.error.HTTPError as error:
+            self.assertEqual(error.code, 400)
+            self.assertIn('Samsung', error.read().decode())
+        self.assertIsNone(store.job, 'No release job is created on Samsung')
+        self.assertFalse((store.path / 'releases').exists(), 'No release directory is created on Samsung')
 
 
 if __name__ == '__main__':

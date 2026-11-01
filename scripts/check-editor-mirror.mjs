@@ -5,6 +5,7 @@ import {mkdirSync,mkdtempSync,readFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import {openEditor,ready,root} from './editor-browser.mjs';
 const storage=mkdtempSync(join(tmpdir(),'cleantv-mirror-'));
 const app=await openEditor(storage);
@@ -33,10 +34,29 @@ try{
  assert.deepEqual(value.errors,{});assert.equal(value.ready,true);assert.equal(value.app.version,'0.9.0');assert.equal(value.context.view,'home');
  assert.equal(value.state.committed.wall,'cove');assert.equal(value.state.appRecords[0].name,'Spotify');assert.equal(value.state.appRecords[0].icon,undefined);
  assert.equal(value.addons.installed['cleantv-weather'].kind,'weather');assert.ok(JSON.stringify(value).length<20000,'Small payload');
+ // #9 The shape of the fixed expression — a broken expression-to-mirror/import mapping must fail here.
+ assert.deepEqual(Object.keys(value).sort(),['addons','app','caps','context','design','detail','errors','hidden','legacy','link','message','ready','state','v','walls','weather','where'],'Top-level expression shape');
+ for(const key of ['view','settingsGroup','focusAction','zone','wallpaper'])assert.ok(key in value.where,'where.'+key+' present');
+ assert.equal(value.where.focusAction,'home.app.youtube');
+ for(const key of ['committed','appRecords','spotify','wallpaperPicker','view','focusAction'])assert.ok(key in value.state,'state.'+key+' present');
+ assert.ok('language' in value.state.committed,'committed.language present');assert.equal(value.message,null,'No message view on Home');
+ // capture() must turn this exact state into a draft with the right preference keys (optional favourites).
+ const cap=spawnSync('python3',['-I','-',JSON.stringify(value)],{cwd:root+'scripts',encoding:'utf8',input:[
+  'import json,sys','sys.path.insert(0,".")','import editor_tizen','from editor_server import PREF_KEYS',
+  'state=json.loads(sys.argv[1])','cap=editor_tizen.capture(state)','keys=sorted(cap["preferences"].keys())',
+  'expected=sorted(list(PREF_KEYS)+[k for k in ["favourites"] if k in cap["preferences"]])',
+  'assert keys==expected, "preference keys %r != %r" % (keys,expected)',
+  'assert cap["version"]==state["app"]["version"] and cap["platform"]=="tizen"',
+  'assert cap["preferences"]["language"]==state["state"]["committed"]["language"]','print("ok")'].join('\n')});
+ assert.ok((cap.stdout||'').trim().endsWith('ok'),'capture() maps the expression state to a draft: '+(cap.stdout||'')+(cap.stderr||''));
  await tvPage.evaluate(()=>{ShoreQA.scene('settings');ShoreQA.activate('settings.group.addons');ShoreQA.activate('addon.tab.discover');});
  value=await read();assert.equal(value.context.view,'appearance.addons');assert.equal(value.detail.addonTab,'addon.tab.discover');
  await tvPage.evaluate(()=>{ShoreQA.activate('addon.tab.installed');ShoreQA.activate('addon.details.cleantv-weather');});
  value=await read();assert.equal(value.context.view,'appearance.addon-detail');assert.equal(value.detail.addonId,'cleantv-weather');
+ // #11 A message/dialog view is read from the sheet, naming the add-on behind an uninstall dialog.
+ await tvPage.evaluate(()=>ShoreQA.activate('addon.remove.cleantv-weather'));
+ value=await read();assert.equal(value.where.view,'message');assert.ok(value.message&&value.message.title,'Message title is read');
+ assert.equal(value.message.addonId,'cleantv-weather','The add-on behind the uninstall dialog is named');
  await tvPage.close();
  console.log('The fixed TV expression is ES5 data access only: no page, storage or focus changes, small payload.');
 
@@ -60,6 +80,7 @@ try{
  await page.waitForFunction(()=>document.querySelector('#tvStatus span').textContent==='CleanTV bereit');
  const draftStorage=await page.evaluate(()=>localStorage.getItem('cleantv.home.v1')),draft=await page.evaluate(()=>JSON.stringify(CleanFrameEditor.project));
  assert.equal(mirrorRequests,0,'No TV reads before Live is opened');
+ assert.equal(await page.locator('#prepare').isVisible(),false,'Für TV vorbereiten is hidden on Samsung (#14)');
  const mirror=fn=>page.evaluate(fn);
  const applied=async n=>page.waitForFunction(n=>{const w=document.getElementById('mirror').contentWindow;return !!(w&&w.CleanTVMirror&&w.CleanTVMirror.revision>=n&&w.ShoreQA&&typeof w.ShoreQA.ready==='function'&&w.ShoreQA.ready());},n,{timeout:20000});
  push(tv());await page.click('#liveTab');
@@ -141,6 +162,10 @@ try{
  push(withWall(s=>{at(s,'home','','home.app.youtube');s.state.committed.recent=['netflix'];}));
  await page.waitForFunction(()=>document.getElementById('mirror').contentWindow.ShoreQA.state().focusAction==='home.app.youtube',null,{timeout:20000});
  console.log('Home reorders apply live; a recent-apps change reloads the frame (#12).');
+ // #9 Language, favourites (rotation) and design rules from the TV all reach the mirror.
+ push(withWall(s=>{at(s,'home','','home.app.youtube');s.state.committed.recent=['netflix'];s.state.committed.language='en';s.state.committed.favourites=['mint','summit'];s.design={version:1,rules:[{view:'home',layout:'dock',state:'*',target:'caption',style:{offsetX:12}}]};}));
+ await page.waitForFunction(()=>{const w=document.getElementById('mirror').contentWindow;return w&&w.ShoreQA&&typeof w.ShoreQA.ready==='function'&&w.ShoreQA.ready()&&w.ShoreQA.state().committed.language==='en'&&JSON.stringify(w.ShoreQA.state().committed.favourites)===JSON.stringify(['mint','summit'])&&w.CleanFrameDesign.get().rules.length===1;},null,{timeout:20000});
+ console.log('Language, favourites and design rules from the TV reach the mirror (#9).');
  await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});document.dispatchEvent(new Event('visibilitychange'));});
  await page.waitForTimeout(400);let count=mirrorRequests;await page.waitForTimeout(1500);
  assert.equal(mirrorRequests,count,'A hidden tab stops reading');assert.equal(await page.locator('#mirror').getAttribute('src'),'about:blank');
