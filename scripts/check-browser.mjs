@@ -1189,6 +1189,24 @@ try {
     }
     check('The widget plate uses no live filters', (await noLiveFilters()).length === 0, await noLiveFilters());
 
+    // The card hugs its content: the fixed .cw-wx box is only as wide as the widest line the widget can
+    // show (the high/low line at its coldest, the three-digit wind, the German credit), with no empty
+    // right margin. A wider box (the old 400px) would leave dead space the owner reported.
+    await look({ layout: 'dock' }); await scene('home');
+    const tight = await current.evaluate(sel => {
+      const c = document.querySelector(sel), scale = document.getElementById('stage').getBoundingClientRect().width / 1920;
+      const R = c.querySelector('[data-slot="range"]'), W = c.querySelector('[data-slot="wind"]'), N = c.querySelector('[data-slot="note"]');
+      const saved = [R.textContent, W.textContent, N.textContent];
+      R.textContent = '↑ −40° · ↓ −40°'; W.textContent = '180 km/h'; N.textContent = 'Wetter: Open-Meteo.com';
+      const rightOf = el => { const r = document.createRange(); r.selectNodeContents(el); return r.getBoundingClientRect().right; };
+      const inner = c.getBoundingClientRect().right - 24 * scale; // the plate's right edge minus its padding; overflow:hidden clips here
+      const over = [['range', R], ['wind', W], ['note', N]].filter(([, el]) => rightOf(el) > inner + 1).map(([k]) => k);
+      const width = Math.round(c.getBoundingClientRect().width / scale);
+      R.textContent = saved[0]; W.textContent = saved[1]; N.textContent = saved[2];
+      return { width, over };
+    }, card);
+    check('The weather card is sized to its content without an empty right margin, and the widest lines still fit', tight.width <= 380 && tight.over.length === 0, tight);
+
     // Legibility: the ink against the brightest (or, for dark ink, darkest) tenth of the plate behind it.
     const contrast = async () => {
       const clip = await current.evaluate(sel => { const c = document.querySelector(sel), r = c.getBoundingClientRect(); c.querySelector('.cw-content').style.visibility = 'hidden'; return { x: r.x, y: r.y, width: r.width, height: r.height }; }, card);
