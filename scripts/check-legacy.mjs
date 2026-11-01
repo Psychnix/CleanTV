@@ -11,7 +11,7 @@ const IDS = ['IkWsFHtOY9.Stremio', 'org.tizen.netflix-app', 'MCmYXNxgcu.DisneyPl
 const NAMES = ['Stremio', 'Netflix', 'Disney+', 'YouTube', 'Apple TV', 'Prime Video', 'ABC iview', 'SBS On Demand', 'Apple Music'];
 const CATALOG = IDS.map((id, i) => ({ id, name: NAMES[i], show: true, iconPath: '' })).concat([{ id: 'AbCdEf1234.FamilyApp', name: 'Family TV', show: true, iconPath: '' }]);
 const SEED = { dock: PRIMARY, wallpaper: 'misty', mode: 'fixed', lastApp: 'netflix', theme: 'shore' };
-// An installed text widget in the Tizen host's two-slot record (tizen-store.js), with no host widget registered.
+// An installed text widget in the Tizen host's two-slot record (tizen-store.js), with no host widget installed: bundled modules register theirs, but the slot shows no card.
 const ADDON_DATA = JSON.stringify({ installed: { note: { api: 1, id: 'note', name: 'Note', version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'Hello from the legacy check', enabled: true } }, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } });
 const ADDONS = JSON.stringify({ v: 1, seq: 1, sum: createHash('sha256').update(ADDON_DATA).digest('hex'), data: ADDON_DATA });
 // Computed on every rendered element of the stage, plus html and body.
@@ -188,7 +188,7 @@ function synthetic([c, html]) {
   return { error, diffs, text, notes: r ? r.diagnostics.notes : [], strays };
 }
 
-const STATES = [], EXTENDED = [], WIDGETS = [], CARDS = [];
+const STATES = [], EXTENDED = [], WIDGETS = [], CARDS = [], WEATHER = [];
 let target = STATES;
 function state(name, prefs, steps = []) { if (!process.env.CHECK_STATE || name.toLowerCase().includes(process.env.CHECK_STATE.toLowerCase())) target.push({ name, prefs, steps }); }
 const base = { bg: 'photo', wall: 'misty', layout: 'dock', apps: 'both', controls: 'icons', focus: 'glass', material: 'soft', font: 'manrope', controlsPosition: 'auto', language: 'en', dateVisible: true };
@@ -258,6 +258,46 @@ state('widget card, photo peaks list', look({ wall: 'peaks', layout: 'list' }));
 state('widget card, photo cove list, top controls', look({ wall: 'cove', layout: 'list', controlsPosition: 'top' }));
 state('widget card, light dock, no date', look({ bg: 'light', dateVisible: false }));
 state('widget card, dark list', look({ bg: 'dark', layout: 'list' }));
+// The weather widget and its place keyboard: an installed cleantv-weather package, a place and a
+// forecast seeded per state (CleanTVWeather.reload), routed suggestions, and refused forecast requests.
+target = WEATHER;
+const MINUTE = 60000, NOW = Math.floor(Date.now() / MINUTE) * MINUTE, ago = minutes => NOW - minutes * MINUTE;
+const OPEN_KEYBOARD = [['scene', 'settings'], ['act', 'settings.group.addons'], ['act', 'addon.details.cleantv-weather'], ['act', 'addon.settings.cleantv-weather'], ['act', 'cleantv.weather.place']];
+const RIGHT = Array.from({ length: 10 }, () => ['nav', 'right']);
+state('weather, photo misty dock, sun cloud and rain', look({ wall: 'misty' }), [['weather', { at: ago(2), code: 61, cloud: 40 }]]);
+state('weather, photo peaks list, clear night with wind', look({ wall: 'peaks', layout: 'list' }), [['weather', { at: ago(2), code: 0, day: 0, windy: true, temp: -3.6 }]]);
+state('weather, photo cove list, top controls, snow', look({ wall: 'cove', layout: 'list', controlsPosition: 'top' }), [['weather', { at: ago(2), code: 73, cloud: 95 }]]);
+state('weather, photo golden dock, thunder, two slots off', look({ wall: 'golden' }), [['weather', { at: ago(2), code: 95, cloud: 60, show: { name: false, temp: true, range: false, wind: true, icon: true } }]]);
+state('weather, dark dock, fog, older than 45 minutes', look({ bg: 'dark' }), [['weather', { at: ago(50), code: 45 }]]);
+state('weather, light list, older than 3 hours', look({ bg: 'light', layout: 'list' }), [['weather', { at: ago(200), code: 2 }]]);
+state('weather, German photo dock, no place yet', look({ language: 'de', wall: 'night' }), [['weather', { place: null }]]);
+state('weather, photo misty dock, font geist', look({ font: 'geist' }), [['weather', { at: ago(2), code: 3 }]]);
+state('weather settings, photo, German', look({ wall: 'peaks', language: 'de' }), [['weather', { at: ago(2), code: 1 }]].concat(OPEN_KEYBOARD.slice(0, 4)));
+state('weather keyboard, photo, suggestions', look({ wall: 'bridge' }), [['weather', { at: ago(2), code: 1 }]].concat(OPEN_KEYBOARD, [['keys', '53111'], ['until', 'cleantv.kb.pick.0']], RIGHT));
+state('weather keyboard, light, German, typed name', look({ bg: 'light', language: 'de' }), [['weather', { at: ago(2), code: 1 }]].concat(OPEN_KEYBOARD, [['keys', 'Neustadt'], ['until', 'cleantv.kb.pick.6']], RIGHT, [['nav', 'down'], ['nav', 'down'], ['nav', 'down'], ['nav', 'down']]));
+state('weather keyboard, dark, empty', look({ bg: 'dark' }), [['weather', { at: ago(2), code: 1 }]].concat(OPEN_KEYBOARD, [['nav', 'right']]));
+
+// Seeds a weather record in the page and re-reads it; ages are whole minutes before NOW in both pages.
+const WEATHER_PACKAGE = JSON.stringify({ installed: { 'cleantv-weather': { api: 1, id: 'cleantv-weather', name: 'Wetter', version: '1.0.0', kind: 'weather', description: 'Wetter', author: 'Psychnix', license: 'MIT', enabled: true } }, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } });
+const WEATHER_INIT = '(' + (record => {
+  if (!localStorage.getItem('cleantv.addons.v1.a')) localStorage.setItem('cleantv.addons.v1.a', record);
+  window.__seedWeather = seed => {
+    const place = seed.place === null ? null : { name: 'Bonn', region: 'Nordrhein-Westfalen', detail: '53111 · Nordrhein-Westfalen', country: 'DE', lat: 50.73438, lon: 7.09549, timezone: 'Europe/Berlin', offset: 3600 };
+    const day = n => new Date(seed.at + 3600000 + n * 86400000).toISOString().slice(0, 10);
+    const forecast = place && seed.code !== undefined ? { lat: 50.73438, lon: 7.09549, at: seed.at, offset: 3600, temp: seed.temp === undefined ? 8.4 : seed.temp, code: seed.code, wind: 12, gusts: 20, precip: 0,
+      cloud: seed.cloud === undefined ? 50 : seed.cloud, day: seed.day === 0 ? 0 : 1, windy: !!seed.windy, days: [{ date: day(0), max: 11.6, min: -2.4 }, { date: day(1), max: 9, min: 4 }] } : null;
+    window.CleanTVStore.write('cleantv.weather.v1', { place, show: seed.show || { name: true, temp: true, range: true, wind: true, icon: true }, forecast });
+    window.CleanTVWeather.reload(); ShoreQA.render();
+    return true;
+  };
+}) + ')(' + JSON.stringify(JSON.stringify({ v: 1, seq: 1, sum: createHash('sha256').update(WEATHER_PACKAGE).digest('hex'), data: WEATHER_PACKAGE })) + ');';
+const WEATHER_FIXTURES = JSON.parse(readFileSync(root + 'scripts/fixtures/weather-api.json', 'utf8'));
+async function routeWeather(page) {
+  const json = (route, body) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
+  await page.route('https://api.open-meteo.com/**', route => route.abort());
+  await page.route('https://geocoding-api.open-meteo.com/**', route => { const u = new URL(route.request().url()); return json(route, WEATHER_FIXTURES.geocoding[u.searchParams.get('name') + (u.searchParams.get('countryCode') ? '|' + u.searchParams.get('countryCode') : '')] || {}); });
+  await page.route('https://openplzapi.org/**', route => { const u = new URL(route.request().url()); return json(route, WEATHER_FIXTURES.openplz[u.pathname.split('/')[1] + '/' + u.searchParams.get('postalCode')] || []); });
+}
 
 const failures = [], notes = [];
 let compared = { states: 0, elements: 0, values: 0, intentional: 0 };
@@ -285,10 +325,14 @@ async function drive(page, s) {
   if (!(await page.evaluate(() => { ShoreQA.scene('home'); return ShoreQA.focus('home.app.netflix'); }))) throw Error('Home has no Netflix tile');
   await ready(page);
   for (const [kind, arg] of s.steps) {
+    // Typing into the on-screen keyboard and waiting for its routed suggestions happen outside the page.
+    if (kind === 'keys') { await page.keyboard.type(arg); continue; }
+    if (kind === 'until') { await page.waitForFunction(a => !!document.querySelector('[data-action="' + a + '"]'), arg); continue; }
     // A key that moves nothing would compare a different state than the name says.
     const ok = await page.evaluate(([k, a]) => {
       const before = JSON.stringify(ShoreQA.where());
       if (k === 'nav') { ShoreQA.nav(a); return JSON.stringify(ShoreQA.where()) !== before; }
+      if (k === 'weather') return window.__seedWeather(a);
       return k === 'scene' ? !!ShoreQA.scene(a) : k === 'act' ? !!ShoreQA.activate(a) : ShoreQA.focus(a);
     }, [kind, arg]);
     if (!ok) throw Error(kind + ' ' + arg + (kind === 'nav' ? ' moved nothing' : ' is unavailable'));
@@ -359,7 +403,7 @@ try {
   if (WIDGETS.length) {
     const pair = [await open(preview, '', { addons: true }), await open(preview, '?legacy=1', { addons: true })];
     extended = extended.concat(pair);
-    const shown = await pair[1].evaluate(() => { const slot = document.getElementById('cleantvWidgets'); return { card: document.querySelector('#addonWidgets .addon-widget p')?.textContent, slot: !!slot && slot.parentElement.id === 'home' && slot.children.length === 0 }; });
+    const shown = await pair[1].evaluate(() => { const slot = document.getElementById('cleantvWidgets'); return { card: document.querySelector('#addonWidgets .addon-widget p')?.textContent, slot: !!slot && slot.parentElement.id === 'home' && ![...slot.children].some(card => !card.hidden) }; });
     if (shown.card !== 'Hello from the legacy check' || !shown.slot) fail('Stored text widget and empty widget slot render', shown);
     await pass(pair[0], pair[1], WIDGETS);
   }
@@ -374,6 +418,18 @@ try {
     const card = await pair[1].evaluate(() => { const el = document.querySelector('#cleantvWidgets .cw-card'); return el && el.getClientRects().length ? getComputedStyle(el).color : null; });
     if (!card) fail('A registered widget card renders under the resolver', card);
     await pass(pair[0], pair[1], CARDS);
+  }
+  if (WEATHER.length) {
+    const pair = [await open(preview, '', { extra: WEATHER_INIT }), await open(preview, '?legacy=1', { extra: WEATHER_INIT })];
+    extended = extended.concat(pair);
+    for (const page of pair) await routeWeather(page);
+    await pass(pair[0], pair[1], WEATHER);
+    const shown = await pair[1].evaluate(at => {
+      window.__seedWeather({ at, code: 61, cloud: 40 }); ShoreQA.scene('home');
+      const card = document.querySelector('#cleantvWidgets [data-widget="cleantv-weather"]');
+      return card && card.getClientRects().length ? [card.querySelector('.cw-wx-temp').textContent, getComputedStyle(card).color, !!card.querySelector('.cw-icon .ut-ink .wx-glass')] : null;
+    }, ago(2));
+    if (!shown || shown[0] !== '8°' || !shown[2]) fail('The weather widget renders under the resolver', shown);
   }
 
   // The resolver against the engine on synthetic stylesheets; documented limitations must be reported.
@@ -538,8 +594,27 @@ try {
   page = await openOld({ tabular: true });
   const tabular = await page.evaluate(() => document.querySelector('.clock-digit') ? getComputedStyle(document.querySelector('.clock-digit')).width : 'none');
   check('without font-variant-numeric the clock cell matches the tabular measurement', tabular === cell && tabular !== 'none', { tabular, cell });
+  // The weather widget and its keyboard through the real resolver: a stored package and fresh data, so nothing is requested.
+  page = await openOld({});
+  await page.addScriptTag({ content: WEATHER_INIT });
+  await page.reload(); await ready(page);
+  await page.addScriptTag({ content: WEATHER_INIT });
+  const weather = await page.evaluate(at => {
+    window.__seedWeather({ at, code: 61, cloud: 40 }); ShoreQA.preferences({ bg: 'photo', layout: 'dock', wall: 'misty' }); ShoreQA.scene('home');
+    const card = document.querySelector('#cleantvWidgets [data-widget="cleantv-weather"]'), style = el => getComputedStyle(el);
+    const result = { shown: !!card && !card.hidden && card.getClientRects().length > 0 };
+    if (!result.shown) return result;
+    result.temp = card.querySelector('.cw-wx-temp').textContent; result.color = style(card).color; result.shadow = style(card).textShadow;
+    result.under = style(card.querySelector('.ut-underlay')).stroke; result.glass = style(card.querySelector('.ut-ink .wx-glass')).fillOpacity;
+    ShoreQA.scene('settings'); ['settings.group.addons', 'addon.details.cleantv-weather', 'addon.settings.cleantv-weather', 'cleantv.weather.place'].forEach(a => ShoreQA.activate(a));
+    const key = document.querySelector('.kb-key:not(.is-focus)'), focus = document.querySelector('.kb-key.is-focus');
+    result.view = ShoreQA.where().view; result.key = key && style(key).backgroundColor; result.focus = focus && style(focus).backgroundColor; result.field = style(document.querySelector('.kb-field')).backgroundColor;
+    return result;
+  }, Date.now() - 60000);
+  check('the weather widget resolves its ink, shadow and icon underlay', weather.shown && weather.temp === '8°' && /^rgb/.test(weather.color) && weather.shadow !== 'none' && /^rgba?\(/.test(weather.under) && weather.glass === '0.16', weather);
+  check('the place keyboard resolves its plates and focus', weather.view === 'cleantv.weather.keyboard' && /^rgba\(/.test(weather.key) && weather.focus === 'rgb(243, 243, 239)' && /^rgba\(/.test(weather.field), weather);
   for (const p of old) { if (p.__errors.length) fail('Old engine: no page errors', p.__errors); await p.close(); }
-  if (!process.env.CHECK_STATE && compared.states !== STATES.length + EXTENDED.length + WIDGETS.length + CARDS.length) fail('Every state is compared', compared);
+  if (!process.env.CHECK_STATE && compared.states !== STATES.length + EXTENDED.length + WIDGETS.length + CARDS.length + WEATHER.length) fail('Every state is compared', compared);
   console.log('Coverage: ' + compared.states + ' states, ' + compared.elements + ' element snapshots, ' + compared.values + ' computed values, ' + PROPS.length + ' properties (+' + PSEUDO.length + ' on ::before/::after); ' + compared.intentional + ' required tnum differences; ' + synthetics + '/' + SYNTHETIC.length + ' synthetic sheets; ' + compared.old + ' old-engine checks.');
   console.log('apply() timings (ms): first ' + stats.first.toFixed(2) + ', compile ' + stats.compile.toFixed(2) + ', last change in a render ' + (stats.lastChange || 0).toFixed(2));
   console.log('  desktop: ' + JSON.stringify(fast, (k, v) => typeof v === 'number' ? +v.toFixed(3) : v));

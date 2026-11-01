@@ -16,7 +16,7 @@
     "check:public": "python3 scripts/check-public.py",
     "check:tools": "python3 -B scripts/test-tools.py",
     "lint": "eslint app",
-    "check:device": "node --test scripts/test-device.mjs scripts/test-android-device.mjs scripts/test-legacy.mjs scripts/test-sha256.mjs scripts/test-tizen-store.mjs scripts/test-tizen-addons.mjs scripts/test-tizen-wallpapers.mjs",
+    "check:device": "node --test scripts/test-device.mjs scripts/test-android-device.mjs scripts/test-legacy.mjs scripts/test-sha256.mjs scripts/test-tizen-store.mjs scripts/test-tizen-addons.mjs scripts/test-tizen-wallpapers.mjs scripts/test-cleantv-keyboard.mjs scripts/test-tizen-weather.mjs",
     "check:legacy": "node scripts/check-legacy.mjs",
     "check:performance": "node scripts/check-performance.mjs",
     "editor": "python3 scripts/editor_server.py --open",

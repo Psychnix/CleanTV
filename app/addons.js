@@ -36,7 +36,8 @@
     'An update cannot change the add-on type.': 'Ein Update kann die Art des Add-ons nicht ändern.', 'This add-on is already up to date.': 'Dieses Add-on ist bereits aktuell.',
     'Add-on is not installed.': 'Das Add-on ist nicht installiert.', 'Could not save add-ons.': 'Die Add-ons konnten nicht gespeichert werden.',
     'Disable another widget first (maximum three active widgets).': 'Deaktiviere zuerst ein anderes Widget (höchstens drei aktive Widgets).',
-    'Unknown add-on action.': 'Unbekannte Add-on Aktion.'
+    'Unknown add-on action.': 'Unbekannte Add-on Aktion.',
+    'The weather add-on must use the ID cleantv-weather.': 'Das Wetter Add-on muss die ID cleantv-weather verwenden.', 'The weather add-on has unsupported fields.': 'Das Wetter Add-on enthält nicht unterstützte Felder.'
   };
   function installedVersion(item, runtime) {
     var result = {}, actual = runtime && runtime[item.id];

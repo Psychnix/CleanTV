@@ -104,6 +104,8 @@ Outside a Samsung TV (browser preview, Android) these exist but report nothing i
 
 `open(viewName, data)` → pushes `{ id: viewName, data: data, f: {} }` onto the panel stack when that view was registered through `CleanTVViews`; returns `false` otherwise. Call it from `ok()` or `key()`; the next render shows the view.
 
+`refresh(id)` → renders again when the settings of add-on `id` are on screen (for example after data arrived later); returns `false` otherwise and does nothing while a widget renders.
+
 ### `window.CleanTVViews` (`app/main.js`)
 
 `register(name, { key(t, k), render(el, t, ctx), norm(t) })` for a full-screen sub-view such as the weather keyboard.
@@ -112,6 +114,19 @@ Outside a Samsung TV (browser preview, Android) these exist but report nothing i
 - `render(el, t, ctx)` fills one full-stage container (`.cleantv-view`, 1920 x 1080) after each key; `ctx = { language, bg }`. Keep DOM changes small; mark the focused control with `is-focus` and `data-action` for browser checks.
 - `key(t, k)` returns `true` when handled; an unhandled Back closes the view. `norm(t)` is optional.
 - `t` is the stack entry; `t.data` holds the `open()` data.
+
+`close(name)` → closes the view `name` when it is on top and renders; returns `false` otherwise. Use it when a choice finishes later than its key, for example after a lookup.
+
+### `window.CleanTVKeyboard` (`app/cleantv-keyboard.js`)
+
+A reusable on-screen keyboard for the remote, loaded before the modules that use it. `create(options)` returns a view for `CleanTVViews.register(options.name, view)`; open it with `CleanTVAddonSettings.open(options.name, { value })`.
+
+- Options: `name`, `title(lang)`, `placeholder(lang)`, `hint(lang)` (status with no text), `suggest(query, lang, done)`, `choose(item, lang, done)`, `min` (2), `max` (40 characters), `delay` (400 ms), `limit` (100 suggestions). `suggest` and `choose` may return a cancel function.
+- Keys on a 10-column grid: A–Z, Ä Ö Ü ß, 1–0, then `-`, Space (4 columns), Delete (2) and OK (3). Letters start a word in capitals and continue in lower case; no leading or doubled space or hyphen.
+- Remote: arrows move without wrapping; Left and Right set the remembered column, Up and Down keep it across the wide keys. Right from the last column enters the suggestions (up to seven rows, scrolling with focus); Left returns. OK types; on OK it goes to the first suggestion or searches at once; on a suggestion it calls `choose`. Back closes and cancels a running search or choice.
+- Suggestions: `delay` ms after the last change and from `min` characters; a change cancels the running search and late answers for older text are ignored. `done(error, items, note)` lists `{ name, detail }` items or shows the error; `done('')` after a choice closes the view through `CleanTVViews.close`, `done(error)` keeps it open with the message.
+- While the view is open it registers the remote's number keys (`tizen.tvinputdevice`, released on close). A hardware keyboard types letters, digits, umlauts, space and hyphen; in this view Backspace deletes instead of acting as Back.
+- The view is built once per opening; keys and suggestions keep `data-action` (`cleantv.kb.<key>`, `cleantv.kb.pick.<n>`) and only `is-focus` and text change. Its CSS names `.sheet` so `legacy.js` resolves the tokens in the sheet context. `layout()` returns the key grid for checks.
 
 ### `window.CleanTVWidgets` (`app/main.js`)
 
@@ -123,7 +138,7 @@ Outside a Samsung TV (browser preview, Android) these exist but report nothing i
 - `ctx = { language, layout: 'dock' | 'list', bg: 'photo' | 'dark' | 'light', visible }`. `visible` is false in arrange mode and while the Spotify player is expanded; the slot is then hidden.
 - Geometry: Dock left 140, top 260 (220 without the date). List right-aligned to the clock's right edge (x 1780), top 300 (260 without the date); with List and Controls position Top right it sits 40px below the controls.
 - Cards stack with a 16px gap. They are at most 840px wide in Dock, so they end before the text and clock cards at x 1000, and at most 880px wide in List.
-- Text and clock add-on cards (`#addonWidgets`) keep their place (x 1000, top 260) while no host card is visible. In List with visible host cards they move into the same right-aligned column, directly below the host cards, so the two never overlap.
+- Text and clock add-on cards (`#addonWidgets`) keep their place (x 1000, top 260) while no host card is visible. In List with visible host cards they move into the same right-aligned column, directly below the host cards, so the two never overlap. A card there that would come within 16px of the Home controls or the compact Spotify player, or within 32px of the bottom edge, is left out together with the cards after it; the first cards in stored order stay. Left-out cards return on the next render with room for them (a smaller host card, the controls moved, the player gone). Below the 260px weather card the first text card always fits; how many more fit depends on the date line, the controls position and the player.
 
 Card and type contract (style.css):
 
@@ -135,6 +150,45 @@ Card and type contract (style.css):
 
 Keep widget and view CSS free of `gap`, the `inset` shorthand, `:focus-visible` reliance, `backdrop-filter`, live blur and runtime pixel analysis: Chromium 47 lacks the first ones, and the others are off the TV's animation path by design. `scripts/check.py` rejects `gap` and `inset`; `npm run check:legacy` compares widget cards with and without the resolver.
 
+## Weather (`cleantv-weather`)
+
+`app/tizen-weather.js` adds the Samsung-only kind `weather`. The package is `cleantv-packages/cleantv-weather/<version>.json` in the CleanTV catalog: API 1 metadata only, the ID must be `cleantv-weather` ("The weather add-on must use the ID cleantv-weather.") and other fields are refused ("The weather add-on has unsupported fields."). Behaviour, data sources and requests live in the app; the package only switches it on.
+
+Network: only `api.open-meteo.com` (forecast), `geocoding-api.open-meteo.com` (place names and coordinates) and `openplzapi.org` (postal codes), and only while the package is installed and enabled. Each request is a plain GET without headers or credentials, 15-second timeout, bounded size (16 KiB forecast, 256 KiB geocoding, 64 KiB OpenPLZ) and the exact requested address. Without the package, or without a chosen place, nothing is requested. Disabling or removing the package cancels a running request and hides the widget; the place and display choices stay in `cleantv.weather.v1` for a later installation.
+
+Place search (Settings → Add-ons → Wetter → Ort) uses `CleanTVKeyboard` with live suggestions from two characters, 400 ms after the last key, cancelling the previous request:
+
+- A name asks Open-Meteo geocoding with `count=100&language=de`. CleanTV sorts the answer itself: populated places (`PPL…`), then other features, districts (`PPLX`) last; within each group by population, then names that start with the text. Every result is offered, for example Frankfurt am Main, Frankfurt (Oder) and the Frankfurt in Bavaria, and all Neustadts with Neustadt an der Weinstraße first (rank 77 in the API's own order). The detail line names the district (or, for a `PPLX`, its town), the state and, outside Germany, the country.
+- Five digits ask OpenPLZ `/de/Localities?postalCode=…&pageSize=50`; four digits ask `/at`, `/ch` and `/li` together. Every place with that code is offered, once per name and state (Austrian postal areas list one place under several districts); of such rows, the one whose municipality has the place's name is kept (1950 Sion: Sion, not Savièse). Other digit counts ask nobody.
+- A postal-code entry has no coordinates. On OK, CleanTV asks geocoding in that country, one lookup after another until one fits: the first part of the name (`Wien, Innere Stadt` → `Wien`), then the municipality, each as written and with OpenPLZ's abbreviations spelled out (`St.` → `Sankt`, `a.` → `am`, `i.` → `im`, `a.d.`/`i.d.`/`v.d.` → `an der`/`in der`/`vor der`), and last the postal code itself. A result fits when it lists the postal code (1201 `Genève` → GeoNames `Genf`), or when it lies in the same state and has the same name or, as a populated place, the same district or municipality (84453 `Mühldorf a. Inn` → `Mühldorf`, municipality `Mühldorf a. Inn`). Names compare by their first part with abbreviations spelled out and without `Kanton`, `Landkreis`, `Kreisfreie Stadt`, `Verwaltungskreis`, `District de` and similar words, spaces or punctuation (`St. Ingbert` = `Sankt Ingbert`); a state matches any of its language parts (`Bern / Berne`) or, in Switzerland, the German name of the canton abbreviation (`GE` → `Genf`, `VD` → `Waadt`). Of several results: same name first, then the code, the district, populated places and population. The postal-code lookup accepts only a place that lists the code (1950 Sion: `Sion` finds only the airport, `1950` finds `Sitten`). Geocoding with `count=1` is not used.
+- The chosen place is stored fixed: name, state and detail for the label, country, latitude, longitude, the IANA zone name for the request and the last `utc_offset_seconds`. A new place loads at once.
+
+Forecast: `current=temperature_2m,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,cloud_cover,is_day&daily=temperature_2m_max,temperature_2m_min&timezone=<stored zone or auto>&forecast_days=2`. "Today" is the date at the place from the stored `utc_offset_seconds` (`new Date(now + offset).toISOString()`), never index 0 and without time-zone rules on the TV; the second day covers midnight offline. Errors (`error: true`, wrong shape, too large, redirected) keep the previous data.
+
+Refresh: every 15 minutes plus a jitter of up to a minute, only while Home is visible (the app is not hidden and no full-screen panel such as All apps or the keyboard is open; the Settings preview counts as Home). Back on Home after an absence (hidden, a panel, or more than 75 seconds without a Home render), data older than 10 minutes refresh at once. Failures retry after 1, 2, 5, 10 and 15 minutes, then every 15 minutes, and at once on the `online` event. The last good forecast is cached; older than 45 minutes the credit line reads `Stand HH:MM · Open-Meteo.com` (TV time); older than 3 hours temperature, pictogram and wind show `–` in their slots, while today's high and low stay. A stored fetch or attempt time more than 5 minutes ahead of the TV clock (a TV that starts before its clock is set again, for example after a power cut) counts as unknown age: the data show as older than 3 hours and a refresh is due at once. Timers run in steps of at most 16 minutes, because browsers fire delays beyond 2^31 ms at once. A request that fails inside `send()` counts as an ordinary failure. Errors appear only in the settings status line, never in the widget.
+
+Widget (`CleanTVWidgets`, order 10): a 400px column in the host card below the clock, Dock at left 140, top 260 (220 without the date), List right-aligned at x 1780, top 300, mirrored (pictogram on the right). Fixed slots: place (`.cw-title`), the 96px pictogram, temperature (`.cw-big`, `12°`, `−` for minus), `↑ 15° · ↓ 7°` and wind `12 km/h` (`.cw-small`), then the credit line. The settings switch place name, temperature, high and low, wind and pictogram; a switched-off slot stays empty (`visibility:hidden`), so nothing moves. With all five off the card is hidden. The weather card lays the shared `--cw-veil` twice more over its plate (inset shadows), because bright photos behind the widget (mint, alpine and sydney in Dock, amber in List) were below 3:1 with the shared veil alone; `check-browser` measures at least 4:1 for the temperature and 3:1 for the smaller lines against the brightest tenth of every photo plate, with and without adaptive ink, and 7:1 and 4.5:1 on dark and light.
+
+Pictogram: `CleanTVIcon` on the 48 grid at 96px, white line glass like the CleanTV icons. Layers combine: sun (moon when `is_day` is 0), cloud, rain, snow, fog, lightning and wind; the cloud and the sun or moon disc are glass bodies (`fill-opacity` .16 on photos, .08 on flat backgrounds, ink copy only), and a sun or moon behind a cloud is knocked out by the mask `#cleantvWxKnock` (the cloud path stroked 5.6 wide), defined once in the widget. The ground row (wind, then precipitation and lightning) is centred under the cloud and the whole group is centred in the grid.
+
+| WMO code | Layers |
+| --- | --- |
+| 0, 1 | sun or moon |
+| 2 | sun or moon + cloud |
+| 3 | cloud |
+| 45, 48 | cloud + fog |
+| 51–57, 61–67 (drizzle, rain, freezing) | cloud + rain; with sun or moon below 50 % cloud cover |
+| 71–77 | cloud + snow; with sun or moon below 50 % |
+| 80–82 | cloud + rain; with sun or moon below 80 % |
+| 85, 86 | cloud + snow; with sun or moon below 80 % |
+| 95–99 | cloud + rain + lightning; with sun or moon below 80 % |
+| other | by cloud cover: below 20 % sun or moon, below 80 % with cloud, otherwise cloud |
+
+Rain is added whenever `precipitation` (last 15 minutes) is at least 0.1 mm, unless it snows; it replaces fog. Wind appears at 30 km/h or gusts of 50 km/h and stays until both fall below 25 and 42 km/h (the state is stored with the forecast).
+
+Credits: the widget's last line reads `Wetter: Open-Meteo.com`, because Open-Meteo's licence asks for the credit next to wherever its data are shown (a TV cannot show a link); the settings name Open-Meteo (CC BY 4.0), GeoNames (CC BY 4.0) and OpenPLZ (ODbL). See `THIRD_PARTY_NOTICES.md`.
+
+Checks: `scripts/test-tizen-weather.mjs` and `scripts/test-cleantv-keyboard.mjs` (in `npm run check:device`) use recorded-style answers in `scripts/fixtures/weather-api.json`; `scripts/check-browser.mjs` installs the package from a routed catalog, types the place on the remote, checks all 32 toggle combinations in Dock and List, legibility and 720p; `npm run check:legacy` compares widget states and the keyboard with and without the resolver and runs both through the Chromium 47 path. Behaviour on the TV itself (certificates, key codes, fonts, performance) still needs a device check.
 ## Wallpapers (`app/tizen-wallpapers.js`)
 
 The `cleantv-wallpapers` package (kind `wallpapers`, `cleantv-packages/cleantv-wallpapers/<version>.json` in the fork) adds the owner's photos to the wallpaper picker. The fork's GitHub Action generates them from `cleantv-wallpapers/images/` (see the fork README): per photo seven baseline JPEGs in `cleantv-wallpapers/generated/<id>/` (`image.jpg`, `thumb.jpg`, `panel.jpg`, `study-soft.jpg`, `field-blur.jpg`, `field-frost.jpg`, `field-clear.jpg`, made with the recipe of `scripts/build-materials.mjs`) and `cleantv-wallpapers/index.json`. Built-in wallpapers are unchanged.

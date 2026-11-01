@@ -263,6 +263,46 @@ try {
     }
   }
   pass('Compact and expanded player stay bottom centred in both layouts, all backgrounds, 1080p/720p; controls appear only on focus and the Dock moves clear.');
+
+  // Three text cards below a host card as tall as the weather card (260px): in List they stop above the controls and the compact player.
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.clock.runFor(50);
+  const savedAddons = await page.evaluate(() => JSON.parse(JSON.stringify(CleanFrameAddons.state())));
+  const notes = ['zulu', 'alpha', 'mike'];
+  await page.evaluate(ids => {
+    const installed = { spotify: CleanFrameAddons.state().installed.spotify };
+    ids.forEach(id => { installed[id] = { id, name: 'Note ' + id, kind: 'text', version: '1.0.0', text: 'Text card ' + id, enabled: true }; });
+    window.dispatchEvent(new CustomEvent('cleanframe:addons', { detail: { installed, catalog: [], busy: false, error: '' } }));
+    window.__tall = true;
+    CleanTVWidgets.register('tall', { order: 1, render: el => { el.innerHTML = window.__tall ? '<div style="width:420px;height:220px"></div>' : ''; } });
+  }, notes);
+  await page.evaluate(() => ShoreQA.look({ layout: 'list', controls: 'both' }));
+  await page.waitForFunction(() => ShoreQA.ready());
+  const column = () => page.evaluate(() => {
+    const box = e => { const r = e.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) }; };
+    const shown = sel => [...document.querySelectorAll(sel)].filter(e => e.getClientRects().length);
+    const compact = document.getElementById('spotifyCompact');
+    return { text: shown('#addonWidgets .addon-widget').map(e => ({ id: e.getAttribute('data-addon'), ...box(e) })), host: shown('#cleantvWidgets .cw-card').map(box),
+      slotBottom: Math.round(document.getElementById('cleantvWidgets').getBoundingClientRect().bottom), utils: box(document.getElementById('utils')), spotify: compact.getClientRects().length ? box(compact) : null };
+  });
+  const hit = (a, b) => !!b && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  const blocked = (r, g) => r.bottom > 1048 || [g.utils, g.spotify].some(o => o && o.left < r.right && r.left < o.right && r.bottom + 16 > o.top && r.top < o.bottom);
+  for (const [status, title] of [['playing', 'Remote music'], ['idle', ''], ['paused', 'Remote music']]) {
+    await publish({ status, title });
+    await scene('home');
+    const g = await column(), last = g.text[g.text.length - 1], detail = JSON.stringify({ status, g });
+    assert.equal(!!g.spotify, status !== 'idle', detail);
+    assert.ok(g.host.length === 1 && g.text.length > 0 && g.text[0].top === g.slotBottom, detail);
+    assert.deepEqual(g.text.map(r => r.id), notes.slice(0, g.text.length), detail);
+    assert.ok(g.text.every(r => r.right === 1780 && !blocked(r, g) && !hit(r, g.utils) && !hit(r, g.spotify) && !hit(r, g.host[0])), detail);
+    assert.ok(g.text.length === notes.length || blocked({ left: last.left, right: last.right, top: last.bottom + 16, bottom: 2 * last.bottom + 16 - last.top }, g), detail);
+  }
+  await page.evaluate(state => {
+    window.__tall = false;
+    window.dispatchEvent(new CustomEvent('cleanframe:addons', { detail: state }));
+  }, savedAddons);
+  await scene('home');
+  pass('List text cards below a tall host card stop above the controls and the compact player, whether it plays, pauses or ends.');
   await scene('settings');
   assert.equal(await page.locator('.settings-group').count(), 5);
   assert.ok(await page.locator('.settings-group').last().evaluate(e => e.getBoundingClientRect().bottom < document.querySelector('.settings-overview-hint').getBoundingClientRect().top));
