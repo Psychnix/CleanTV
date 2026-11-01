@@ -103,6 +103,8 @@ Outside a Samsung TV (browser preview, Android) these exist but report nothing i
 
 `open(viewName, data)` → pushes `{ id: viewName, data: data, f: {} }` onto the panel stack when that view was registered through `CleanTVViews`; returns `false` otherwise. Call it from `ok()` or `key()`; the next render shows the view.
 
+`refresh(id)` → renders again when the settings of add-on `id` are on screen (for example after data arrived later); returns `false` otherwise and does nothing while a widget renders.
+
 ### `window.CleanTVViews` (`app/main.js`)
 
 `register(name, { key(t, k), render(el, t, ctx), norm(t) })` for a full-screen sub-view such as the weather keyboard.
@@ -111,6 +113,19 @@ Outside a Samsung TV (browser preview, Android) these exist but report nothing i
 - `render(el, t, ctx)` fills one full-stage container (`.cleantv-view`, 1920 x 1080) after each key; `ctx = { language, bg }`. Keep DOM changes small; mark the focused control with `is-focus` and `data-action` for browser checks.
 - `key(t, k)` returns `true` when handled; an unhandled Back closes the view. `norm(t)` is optional.
 - `t` is the stack entry; `t.data` holds the `open()` data.
+
+`close(name)` → closes the view `name` when it is on top and renders; returns `false` otherwise. Use it when a choice finishes later than its key, for example after a lookup.
+
+### `window.CleanTVKeyboard` (`app/cleantv-keyboard.js`)
+
+A reusable on-screen keyboard for the remote, loaded before the modules that use it. `create(options)` returns a view for `CleanTVViews.register(options.name, view)`; open it with `CleanTVAddonSettings.open(options.name, { value })`.
+
+- Options: `name`, `title(lang)`, `placeholder(lang)`, `hint(lang)` (status with no text), `suggest(query, lang, done)`, `choose(item, lang, done)`, `min` (2), `max` (40 characters), `delay` (400 ms), `limit` (100 suggestions). `suggest` and `choose` may return a cancel function.
+- Keys on a 10-column grid: A–Z, Ä Ö Ü ß, 1–0, then `-`, Space (4 columns), Delete (2) and OK (3). Letters start a word in capitals and continue in lower case; no leading or doubled space or hyphen.
+- Remote: arrows move without wrapping; Left and Right set the remembered column, Up and Down keep it across the wide keys. Right from the last column enters the suggestions (up to seven rows, scrolling with focus); Left returns. OK types; on OK it goes to the first suggestion or searches at once; on a suggestion it calls `choose`. Back closes and cancels a running search or choice.
+- Suggestions: `delay` ms after the last change and from `min` characters; a change cancels the running search and late answers for older text are ignored. `done(error, items, note)` lists `{ name, detail }` items or shows the error; `done('')` after a choice closes the view through `CleanTVViews.close`, `done(error)` keeps it open with the message.
+- While the view is open it registers the remote's number keys (`tizen.tvinputdevice`, released on close). A hardware keyboard types letters, digits, umlauts, space and hyphen; in this view Backspace deletes instead of acting as Back.
+- The view is built once per opening; keys and suggestions keep `data-action` (`cleantv.kb.<key>`, `cleantv.kb.pick.<n>`) and only `is-focus` and text change. Its CSS names `.sheet` so `legacy.js` resolves the tokens in the sheet context. `layout()` returns the key grid for checks.
 
 ### `window.CleanTVWidgets` (`app/main.js`)
 

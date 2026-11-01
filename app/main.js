@@ -603,6 +603,12 @@
       if (typeof name !== 'string' || !own(views, name)) return false;
       push({ id: name, data: data, f: {} });
       return true;
+    },
+    /* For data that arrived later: renders again while this add-on's settings are on screen. */
+    refresh: function (id) {
+      if (!S.c || widgetsRendering || top().id !== 'appearance' || top().group !== 'addon-settings' || top().addonId !== id) return false;
+      after();
+      return true;
     }
   };
   var VIEWS_API = {
@@ -618,6 +624,12 @@
       };
       FRAMES[name] = function () { return '<div class="cleantv-view" data-slot="view"></div>'; };
       FILLS[name] = function (t, el) { guarded(function () { view.render(el.view, t, { language: S.c.language, bg: S.c.bg }); }); };
+    },
+    /* Closes the named view when it is on top (for example after a choice that finished later) and renders. */
+    close: function (name) {
+      if (!S.c || typeof name !== 'string' || !own(views, name) || top().id !== name) return false;
+      pop(); after();
+      return true;
     }
   };
   var WIDGETS = {

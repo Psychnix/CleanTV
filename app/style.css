@@ -862,3 +862,36 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000}
 .settings-version-button:focus-visible{outline:2px solid currentColor;outline-offset:4px}
 .software-icon{width:72px;height:72px;object-fit:contain;border-radius:16px}
 .software-notes{font-size:24px;line-height:32px;white-space:pre-wrap;overflow-wrap:break-word;margin:24px 0;color:var(--ink)}
+
+/* CleanTV on-screen keyboard (app/cleantv-keyboard.js): text line and 10-column keys on the left,
+   live suggestions on the right. Built once; remote focus only moves the is-focus class. The
+   selectors name .sheet so legacy.js resolves --plate and the other tokens in the sheet context. */
+.sheet .kb{position:absolute;left:0;top:0;width:1920px;height:1080px;color:var(--ink)}
+.sheet .kb-field{position:absolute;left:140px;top:176px;width:988px;height:88px;padding:0 28px;border-radius:20px;background:var(--plate);box-shadow:var(--plate-edge);display:flex;align-items:center;font-size:40px;line-height:48px;font-weight:500;letter-spacing:-.5px;white-space:nowrap;overflow:hidden}
+.sheet .kb-value{flex:none;white-space:pre}
+.sheet .kb-caret{flex:none;width:3px;height:44px;margin-left:2px;border-radius:2px;background:currentColor}
+.sheet .kb-placeholder{margin-left:12px;color:var(--faint);overflow:hidden;text-overflow:ellipsis}
+.sheet .kb-placeholder.is-off{display:none}
+.sheet .kb-keys{position:absolute;left:140px;top:296px;width:988px;height:468px}
+.sheet .kb-key{position:absolute;height:84px;border-radius:18px;background:var(--plate);box-shadow:var(--plate-edge);color:var(--ink);font-size:34px;line-height:40px;font-weight:500;text-align:center;white-space:nowrap;transition:background-color 140ms linear,color 140ms linear}
+.sheet .kb-key.is-wide{font-size:28px}
+.sheet .kb-key.is-focus{background:var(--solid);color:var(--solid-ink);box-shadow:none}
+.sheet .kb-side{position:absolute;left:1200px;top:176px;width:580px;height:800px}
+.sheet .kb-label{font-size:28px;line-height:36px;font-weight:500;letter-spacing:-.2px;color:var(--mute)}
+.sheet .kb-list{position:absolute;left:0;top:48px;width:580px;height:664px}
+.sheet .kb-item{position:absolute;left:0;width:580px;height:88px;padding:8px 24px;border-radius:18px;display:flex;flex-direction:column;justify-content:center;color:var(--ink);transition:background-color 140ms linear,color 140ms linear}
+.sheet .kb-item.is-focus{background:var(--solid);color:var(--solid-ink)}
+.sheet .kb-item.is-busy{opacity:.72}
+.sheet .kb-name{display:block;font-size:30px;line-height:38px;font-weight:500;letter-spacing:-.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sheet .kb-detail{display:block;font-size:22px;line-height:30px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sheet .kb-item.is-focus .kb-detail{color:var(--solid-mute)}
+.sheet .kb-cue{left:540px}
+.sheet .kb-cue.is-on{display:flex}
+.sheet .kb-cue .ico{width:32px;height:32px}
+.sheet .kb-before{top:-2px}
+.sheet .kb-after{top:716px}
+.sheet .kb-status{position:absolute;left:0;top:764px;width:580px;font-size:26px;line-height:36px;color:var(--mute)}
+.sheet .kb-status.is-error{color:var(--warn)}
+.sheet .kb-hint{position:absolute;left:140px;top:968px;display:flex;align-items:center;font-size:26px;line-height:36px;color:var(--mute)}
+.sheet .kb-hint>*+*{margin-left:16px}
+.sheet .kb-hint .kb-hint-back{margin-left:40px}
