@@ -28,6 +28,9 @@ for script in sorted(list(app.glob('tizen-*.js')) + list(app.glob('cleantv-*.js'
 # PKCE needs no client secret; none may ever be bundled with the TV app or the relay.
 for script in sorted(list(app.rglob('*.js')) + list((root / 'relay').rglob('*.js')) + list((root / 'relay').rglob('*.toml'))):
     assert 'client_secret' not in script.read_text(encoding='utf-8').lower(), 'No client secret belongs in ' + script.relative_to(root).as_posix()
+# Scripts stay LF (see .gitattributes): a CRLF file turns the next edit into a whole-file diff.
+for script in sorted(list(app.rglob('*.js')) + list((root / 'relay').rglob('*.js')) + list((root / 'relay').rglob('*.mjs'))):
+    assert b'\r\n' not in script.read_bytes(), 'Use LF line endings: ' + script.relative_to(root).as_posix()
 assert re.search(r"var CLIENT_ID = '[0-9a-f]{32}'", (app / 'tizen-spotify.js').read_text(encoding='utf-8')), 'The Spotify client ID is 32 hex characters'
 assert not [node for node in manifest.iter() if node.tag.split('}')[-1] in ('content-security-policy', 'content-security-policy-report-only', 'allow-navigation')], 'Keep the Tizen runtime in WARP mode'
 for tag in ['content', 'icon']:
