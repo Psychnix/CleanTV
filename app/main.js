@@ -15,7 +15,7 @@
   var spotifyState = { status: 'idle' }, spotifyAt = 0, spotifyTimer = 0, spotifyObserving = null;
   var spotifyCommands = ['previous', 'toggle', 'next'];
   var spotifyAwake = false, spotifyIdleTimer = 0;
-  var HOME_OPTIONS = ['clockFormat', 'dateVisible', 'spotifyEnabled', 'spotifySurface', 'spotifyTransparency', 'controlsPosition', 'language'];
+  var HOME_OPTIONS = ['clockFormat', 'dateVisible', 'spotifyEnabled', 'spotifySurface', 'spotifyTransparency', 'controlsPosition', 'language', 'favourites'];
   var ORIGINAL_HOME = ANDROID ? 'Original Home' : 'Samsung Home';
   var DEVICE_LABEL = ANDROID ? 'Android TV' : 'Samsung';
 
@@ -47,6 +47,8 @@
   // Old engines keep the curated ink classes instead of per-wallpaper ink variables.
   var ADAPTIVE_INK = OLD ? {} : window.CleanFrameAdaptiveInk || {};
   WALLS.forEach(function (w) { w.ut = w.ut || { tr: 'light', br: 'light' }; w.frostVeil = w.frostVeil || .12; });
+  // Add-on wallpapers (tizen-wallpapers.js) are remote entries appended to the same array before this file runs.
+  var ADDON_WALLS = window.CleanTVWallpapers || null, FAVOURITES = 256;
   var MODES = [
     { id: 'fixed', name: 'Fixed', min: 0 }, { id: 'open', name: 'Each time Home opens', min: 0 },
     { id: '5', name: 'Every 5 minutes', min: 5 }, { id: '15', name: 'Every 15 minutes', min: 15 },
@@ -90,7 +92,8 @@
     pause: '<path d="M8 5v14M16 5v14"/>',
     previous: '<path d="M5 5v14M19 5 7 12l12 7Z"/>',
     next: '<path d="M19 5v14M5 5l12 7-12 7Z"/>',
-    warn: '<path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17.3v.1"/>'
+    warn: '<path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17.3v.1"/>',
+    star: '<path d="m12 3.8 2.53 5.13 5.67.82-4.1 4 .97 5.64L12 16.73l-5.07 2.66.97-5.64-4.1-4 5.67-.82Z"/>'
   };
 
   /* ---------- State ---------- */
@@ -117,6 +120,15 @@
   function app(id) { for (var i = 0; i < APPS.length; i++) if (APPS[i].id === id) return APPS[i]; return null; }
   function wall(id) { for (var i = 0; i < WALLS.length; i++) if (WALLS[i].id === id) return WALLS[i]; return null; }
   function wallIndex(id) { for (var i = 0; i < WALLS.length; i++) if (WALLS[i].id === id) return i; return 0; }
+  function remoteWall(id) { var w = wall(id); return !!(w && w.remote && ADDON_WALLS); }
+  // Add-on titles come from file names and are shown as they are.
+  function wallName(w) { return w.remote ? w.name : translate(w.name); }
+  /* Image addresses: bundled files, or the add-on module's local copy or stream address (docs/addons.md). */
+  function wallSrc(id, role) {
+    if (remoteWall(id)) return ADDON_WALLS.url(id, role);
+    return role === 'jpg' ? WP + id + '.jpg' : role === 'thumb' || role === 'panel' ? WP + id + '-' + role + '.jpg' : 'assets/materials/' + id + '-' + role + '.jpg';
+  }
+  function favourite(id) { return S.c.favourites.indexOf(id) >= 0; }
   function frostClass(w) { var i = [.12, .20, .30, .36, .44].indexOf(w.frostVeil); return i > 0 ? ' fv-' + (i + 1) : ''; }
   function wallClasses(w) { return frostClass(w) + (w.listColumn ? ' lc-' + w.listColumn : '') + (w.dockQuiet ? ' db-quiet' : '') + (w.clockMist ? ' tl-mist' : ''); }
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -135,6 +147,11 @@
     return '<svg class="ico' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true">'
       + (underlay ? '<g class="ut-underlay" transform="translate(0 .5)">' + SVG[name] + '</g><g class="ut-ink">' + SVG[name] + '</g>' : SVG[name]) + '</svg>';
   }
+  /* The same underlay and ink layering for host widgets, on a 48-unit grid (docs/addons.md). */
+  window.CleanTVIcon = function (svgInner, size) {
+    var inner = String(svgInner || ''), side = clamp(Math.round(Number(size) || 48), 8, 256);
+    return '<svg class="ico cw-icon" viewBox="0 0 48 48" width="' + side + '" height="' + side + '" aria-hidden="true"><g class="ut-underlay" transform="translate(0 .5)">' + inner + '</g><g class="ut-ink">' + inner + '</g></svg>';
+  };
   function badge(on) {
     return on
       ? '<svg class="badge is-on" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor"/><path class="badge-tick" d="m7.6 12.4 3 3 5.8-6.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
@@ -393,8 +410,15 @@
       spotifySurface: pick(s.spotifySurface, ['dark', 'light', 'cover'], 'dark'),
       spotifyTransparency: typeof s.spotifyTransparency === 'number' && isFinite(s.spotifyTransparency) ? clamp(Math.round(s.spotifyTransparency / 5) * 5, 0, 100) : 60,
       controlsPosition: pick(s.controlsPosition, ['auto', 'top', 'bottom'], 'auto'),
-      language: pick(s.language, ['de', 'en'], /^de\b/i.test(window.navigator.language) ? 'de' : 'en')
+      language: pick(s.language, ['de', 'en'], /^de\b/i.test(window.navigator.language) ? 'de' : 'en'),
+      favourites: cleanFavourites(s.favourites)
     };
+  }
+  /* Unique known wallpaper IDs in starring order. */
+  function cleanFavourites(list) {
+    var out = [];
+    (Array.isArray(list) ? list : []).forEach(function (id) { if (typeof id === 'string' && wall(id) && out.indexOf(id) < 0 && out.length < FAVOURITES) out.push(id); });
+    return out;
   }
   function serialise(c) {
     var out = {};
@@ -412,7 +436,7 @@
     var saved = load(), initial; S.c = clean(saved); initial = next(S.c.home.slice(), S.c.recent.slice());
     S.stack = [{ id: 'home', f: { zone: 'apps', u: 0 } }];
     S.sel = S.c.lastApp; S.selIdx = S.c.home.indexOf(S.sel);
-    if (saved && initial.mode === 'open') initial.wall = WALLS[(wallIndex(initial.wall) + 1) % WALLS.length].id;
+    if (saved && initial.mode === 'open') initial.wall = rotationNext(initial);
     // Keep the old schema keys alongside the builder values for in-place updates.
     try { localStorage.setItem(KEY, JSON.stringify(serialise(initial))); S.c = initial; storageOk = true; } catch (e) { storageOk = false; }
   }
@@ -426,6 +450,8 @@
     catch (e) { storageOk = false; S.failed++; S.err = label; log('Not saved: ' + label); return false; }
     if (c.wall !== S.c.wall || c.mode !== S.c.mode) resetRotation();
     storageOk = true; S.c = c; S.writes++; S.err = null; log('Saved: ' + label);
+    // Add-on photos are kept or deleted after the wallpaper, rotation or favourites change.
+    if (ADDON_WALLS) ADDON_WALLS.sync();
     return true;
   }
   function errText(lifted) {
@@ -574,12 +600,163 @@
   function openWallpaper() {
     var i = wallIndex(S.c.wall);
     S.err = null; S.wallError = null;
+    if (ADDON_WALLS) ADDON_WALLS.picker();
     push({ id: 'wallpaper', i: i, top: clamp(i - 2, 0, Math.max(0, WALLS.length - WALL_VISIBLE)), f: { zone: 'photo' },
       previewTimer: 0, previewDue: null, applyPending: null, failedId: null, failedApply: false, retryBundle: null });
   }
   function isSettingsDetail(t) { return t.id === 'appearance' || t.id === 'wallpaper'; }
 
   var V = {};
+
+  /* ---------- CleanTV host interfaces (docs/addons.md, "CleanTV host interfaces") ---------- */
+  // Modules loaded before main.js may leave window.X = {queue: [[...register arguments]]}; see Start.
+  var addonSettings = {}, widgets = {}, widgetCards = {}, views = {}, widgetsRendering = false;
+  function own(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+  /* A module error is reported asynchronously (legacy.js shows it on old TVs) and never stops Home. */
+  function guarded(fn, fallback) { try { return fn(); } catch (e) { setTimeout(function () { throw e; }, 0); return fallback; } }
+  var SETTINGS_API = {
+    register: function (id, provider) {
+      if (typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(id) || own(addonSettings, id)) throw new Error('Add-on settings cannot be registered: ' + id);
+      if (!provider || typeof provider.title !== 'function' || typeof provider.sections !== 'function' || typeof provider.ok !== 'function') throw new Error('Add-on settings need title(), sections() and ok(): ' + id);
+      addonSettings[id] = provider;
+    },
+    /* For ok() or key(): opens a view registered through CleanTVViews; the next render shows it. */
+    open: function (name, data) {
+      if (typeof name !== 'string' || !own(views, name)) return false;
+      push({ id: name, data: data, f: {} });
+      return true;
+    }
+  };
+  var VIEWS_API = {
+    register: function (name, view) {
+      if (typeof name !== 'string' || !/^[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+$/.test(name) || own(V, name)) throw new Error('View cannot be registered: ' + name);
+      if (!view || typeof view.key !== 'function' || typeof view.render !== 'function') throw new Error('View needs key() and render(): ' + name);
+      views[name] = view;
+      V[name] = {
+        sheet: true,
+        norm: function (t) { if (typeof view.norm === 'function') guarded(function () { view.norm(t); }); },
+        // Back closes the view unless key() handled it.
+        key: function (t, k) { if (!guarded(function () { return view.key(t, k) === true; }, false) && k === 'back') pop(); }
+      };
+      FRAMES[name] = function () { return '<div class="cleantv-view" data-slot="view"></div>'; };
+      FILLS[name] = function (t, el) { guarded(function () { view.render(el.view, t, { language: S.c.language, bg: S.c.bg }); }); };
+    }
+  };
+  var WIDGETS = {
+    register: function (id, widget) {
+      if (typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(id) || own(widgets, id)) throw new Error('Widget cannot be registered: ' + id);
+      if (!widget || typeof widget.render !== 'function') throw new Error('Widget needs render(): ' + id);
+      widgets[id] = { order: typeof widget.order === 'number' && isFinite(widget.order) ? widget.order : 0, render: widget.render };
+    },
+    /* renderHome's call. The host still hides the slot behind the expanded Spotify player. */
+    render: function (ctx) { renderWidgets(ctx); },
+    /* For a module whose data arrived later: renders the widgets again from host state, so card
+       visibility and plate alignment follow the new content. Nothing happens while a sheet is open. */
+    refresh: function () {
+      if (!S.c || widgetsRendering || V[top().id].sheet) return;
+      renderWidgets(widgetCtx(homeState(top())));
+      placeAddonCards();
+    }
+  };
+  function addonSettingsActive(id) {
+    var installed = ADDONS.state().installed, item = own(addonSettings, id) && own(installed, id) && installed[id];
+    return !!(item && item.enabled !== false);
+  }
+  function addonSettingsTitle(t) {
+    var title = addonSettingsActive(t.addonId) && guarded(function () { return addonSettings[t.addonId].title(S.c.language); }, '');
+    return typeof title === 'string' && title ? title : translate('Settings');
+  }
+  /* Provider rows in the detailSections shape. Items keep their own axis and value for ok();
+     the host shows a radio tick only from `applied`, never from Home preferences. */
+  function addonSettingsSections(t) {
+    var provider = addonSettings[t.addonId], list = addonSettingsActive(t.addonId) ? guarded(function () { return provider.sections(S.c.language); }, []) : [];
+    if (!Array.isArray(list)) return [];
+    return list.map(function (section, n) {
+      section = section && typeof section === 'object' ? section : {};
+      return {
+        id: 'cleantv-' + (typeof section.id === 'string' && /^[A-Za-z0-9_-]{1,48}$/.test(section.id) ? section.id : n),
+        title: typeof section.title === 'string' ? section.title : '', horizontal: !!section.horizontal, reason: typeof section.reason === 'string' ? section.reason : '',
+        items: (Array.isArray(section.items) ? section.items : []).filter(function (item) {
+          return item && typeof item.action === 'string' && /^[A-Za-z0-9_.-]{1,96}$/.test(item.action) && !/^(settings|addon|group|choice)\./.test(item.action) && typeof item.label === 'string';
+        }).map(function (item) {
+          return { action: item.action, label: item.label, description: typeof item.description === 'string' ? item.description : '', disabled: !!item.disabled, radio: item.axis !== undefined, applied: item.applied === true, source: item };
+        })
+      };
+    }).filter(function (section) { return section.items.length; });
+  }
+  /* OK hint: a radio choice applies, a row without `axis` opens something (it shows a forward chevron).
+     A provider may name its own hint, already in the current language, e.g. for a row that acts at once. */
+  function addonSettingsHint(item) {
+    var hint = item.source && item.source.hint;
+    if (typeof hint === 'string' && hint && hint.length <= 80) return translate(hint);
+    return translate(item.radio ? 'Apply selected setting' : 'Open');
+  }
+  function addonSettingsOk(t, item) {
+    var provider = addonSettings[t.addonId];
+    if (provider && item.source && addonSettingsActive(t.addonId)) guarded(function () { return provider.ok(item.source); });
+  }
+  function addonSettingsKey(t, k) {
+    var provider = addonSettings[t.addonId];
+    return !!(provider && typeof provider.key === 'function' && addonSettingsActive(t.addonId) && guarded(function () { return provider.key(t, k) === true; }, false));
+  }
+  function openAddonSettings(id) {
+    if (!addonSettingsActive(id)) return;
+    push({ id: 'appearance', group: 'addon-settings', addonId: id, f: { action: S.detailFocus['addon-settings.' + id] || '' } });
+  }
+  /* Each widget keeps one card: a glass plate on photos (registered material, as .ut-lens) and its content. */
+  function widgetCard(id) {
+    var card = document.createElement('section');
+    card.className = 'cw-card'; card.setAttribute('data-widget', id);
+    card.innerHTML = '<div class="cw-glass" aria-hidden="true"><div class="cw-field"><img class="ph-field-img" alt=""><div class="scrim"></div><div class="shade"></div><div class="ph-dim"></div><div class="ph-scrim"></div><div class="ph-col"></div><div class="ut-dim ut-tr"></div><div class="ut-dim ut-br"></div></div><div class="cw-veil"></div></div><div class="cw-content"></div>';
+    card._field = card.firstChild.firstChild; card._img = card._field.firstChild; card._content = card.lastChild;
+    return card;
+  }
+  function widgetCtx(hs) { return { language: S.c.language, layout: S.c.layout, bg: S.c.bg, visible: hs.mode !== 'arrange' && !spotifyExpanded() }; }
+  function renderWidgets(ctx) {
+    widgetsRendering = true;
+    try { drawWidgets(ctx); } finally { widgetsRendering = false; }
+  }
+  function drawWidgets(ctx) {
+    var ids = Object.keys(widgets).sort(function (a, b) { return widgets[a].order - widgets[b].order || (a < b ? -1 : 1); });
+    var photo = S.c.bg === 'photo' && !!S.shown, src = photo ? fieldSrc(S.shown.wall, S.shown.material) : '', top;
+    // The context always comes from host state; only `visible` is the caller's, and never behind the expanded player.
+    ctx = { language: S.c.language, layout: S.c.layout, bg: S.c.bg, visible: !!(ctx && ctx.visible) && !spotifyExpanded() };
+    widgetSlot.hidden = !ctx.visible;
+    // Without widgets nothing is measured, so Home renders exactly as before.
+    if (!ids.length) return;
+    if (S.c.layout === 'list') top = S.c.controlsPosition === 'top' ? utilsEl.offsetTop + utilsEl.offsetHeight + 40 : S.c.dateVisible ? 300 : 260;
+    else top = S.c.dateVisible ? 260 : 220;
+    widgetSlot.style.top = top + 'px';
+    ids.forEach(function (id, i) {
+      var card = widgetCards[id] || (widgetCards[id] = widgetCard(id));
+      if (widgetSlot.children[i] !== card) widgetSlot.insertBefore(card, widgetSlot.children[i] || null);
+      guarded(function () { widgets[id].render(card._content, ctx); });
+      // A widget with nothing to show leaves its element empty; the card and plate then disappear.
+      card.hidden = !card._content.firstChild;
+    });
+    if (!ctx.visible) return;
+    ids.forEach(function (id) {
+      var card = widgetCards[id];
+      if (card.hidden) return;
+      if (card._img._src !== src) { card._img._src = src; if (src) card._img.src = src; else card._img.removeAttribute('src'); }
+      if (photo) fieldTransform(card._field, widgetSlot.offsetLeft + card.offsetLeft, widgetSlot.offsetTop + card.offsetTop, card.offsetWidth, card.offsetHeight);
+    });
+  }
+  /* In List both columns sit right of the app list: the text and clock cards (#addonWidgets, addons.js)
+     move directly below visible host widgets, so the two never overlap. Without host widgets, or in
+     Dock (cards end before x 1000), they keep their own place and nothing is measured. */
+  function placeAddonCards() {
+    var cards = document.getElementById('addonWidgets'), below = '', height;
+    if (!cards) return;
+    if (S.c.layout === 'list' && !cards.hidden && cards.firstChild && !widgetSlot.hidden && Object.keys(widgets).length) {
+      height = widgetSlot.offsetHeight;
+      if (height) below = widgetSlot.offsetTop + height + 'px';
+    }
+    if (cards._below === below) return;
+    cards._below = below;
+    cards.className = below ? 'is-below-widgets' : '';
+    cards.style.top = below;
+  }
 
   /* ---------- Home (browse) ---------- */
   V.home = {
@@ -711,6 +888,14 @@
     cancelWallpaperTimer(t); t.applyPending = null; S.err = null; pop(); restoreLook();
     if (top().id === 'appearance' && top().group === 'background') detailFocus(top(), { action: 'background.wallpaper' }, 0);
   }
+  /* Every wallpaper has a favourites star. While rotation is on, the first ten add-on favourites are
+     kept locally; an eleventh keeps its star, and a hint says that it is not stored. */
+  function toggleFavourite(t, w) {
+    var c = next(S.c.home.slice(), S.c.recent.slice()), on = favourite(w.id);
+    c.favourites = on ? without(S.c.favourites, w.id) : S.c.favourites.concat([w.id]).slice(0, FAVOURITES);
+    t.favouriteFailed = !write(c, (on ? 'Favourite removed: ' : 'Favourite added: ') + w.name);
+    if (!t.favouriteFailed && !on && w.remote && S.c.mode !== 'fixed' && S.c.favourites.filter(remoteWall).length > ADDON_WALLS.limit) t.notice = 'At most 10 add-on favourites are kept for rotation.';
+  }
   V.wallpaper = {
     norm: function (t) {
       t.i = clamp(t.i, 0, WALLS.length - 1);
@@ -720,6 +905,7 @@
       t.top = clamp(t.top, 0, Math.max(0, WALLS.length - WALL_VISIBLE));
     },
     key: function (t, k) {
+      t.notice = ''; t.favouriteFailed = false;
       if (k === 'back') { closeWallpaper(t); return; }
       if (t.f.zone === 'back') {
         if (k === 'ok') closeWallpaper(t);
@@ -731,10 +917,20 @@
         else if (k === 'up' || k === 'left') t.f.zone = 'photo';
         return;
       }
+      // The star column: Up/Down browse like the photo column, OK toggles, Left returns to the photo.
+      if (t.f.zone === 'star') {
+        if (k === 'ok') toggleFavourite(t, WALLS[t.i]);
+        else if (k === 'left') t.f.zone = 'photo';
+        else if (k === 'up' && t.i === 0) { t.f.zone = 'back'; t.applyPending = null; }
+        else if (k === 'up' || k === 'down' && t.i < WALLS.length - 1) { previewWallpaper(t, t.i + (k === 'up' ? -1 : 1), false); t.f.zone = 'star'; }
+        else if ((k === 'right' || k === 'down') && t.failedId) t.f.zone = 'retry';
+        return;
+      }
       if (k === 'left' || k === 'up' && t.i === 0) { t.f.zone = 'back'; t.applyPending = null; }
       else if (k === 'up' && t.i > 0) previewWallpaper(t, t.i - 1, false);
       else if (k === 'down' && t.i < WALLS.length - 1) previewWallpaper(t, t.i + 1, false);
-      else if ((k === 'right' || k === 'down') && t.failedId) t.f.zone = 'retry';
+      else if (k === 'right') t.f.zone = 'star';
+      else if (k === 'down' && t.failedId) t.f.zone = 'retry';
       else if (k === 'ok') { if (t.retryBundle) applyWallpaper(t, t.retryBundle); else applyWallpaper(t); }
     },
     point: function (t, z, i) {
@@ -743,6 +939,9 @@
       else if (z === 'wall-choice' && i >= 0 && i < WALLS.length) {
         if (i === t.i) { t.f.zone = 'photo'; this.key(t, 'ok'); }
         else previewWallpaper(t, i, true);
+      } else if (z === 'wall-star' && i >= 0 && i < WALLS.length) {
+        if (i !== t.i) previewWallpaper(t, i, false);
+        t.f.zone = 'star'; this.key(t, 'ok');
       }
     }
   };
@@ -920,7 +1119,7 @@
     if (id === 'editor') openEditor('settings');
     else openAppearance(id);
   }
-  var DETAIL_NAMES = { software: 'Software update', remote: 'iPhone Remote', 'spotify-link': 'Spotify', display: 'Display', homescreen: 'Home screen', addons: 'Add-ons', 'addon-detail': 'Add-ons', background: 'Background', layout: 'Layout', typography: 'Typography', focus: 'Focus', rotation: 'Rotation', samsung: DEVICE_LABEL, clock: 'Clock and date', spotify: 'Spotify', language: 'Language' };
+  var DETAIL_NAMES = { software: 'Software update', remote: 'iPhone Remote', 'spotify-link': 'Spotify', display: 'Display', homescreen: 'Home screen', addons: 'Add-ons', 'addon-detail': 'Add-ons', 'addon-settings': 'Add-ons', background: 'Background', layout: 'Layout', typography: 'Typography', focus: 'Focus', rotation: 'Rotation', samsung: DEVICE_LABEL, clock: 'Clock and date', spotify: 'Spotify', language: 'Language' };
   function choice(axis, value, disabled) {
     return { action: axis === 'mode' ? 'rotation.' + value : 'choice.' + axis + '.' + value, axis: axis, value: value, disabled: !!disabled,
       label: typeof value === 'boolean' ? value ? translate('On') : translate('Off') : axis === 'font' ? FONTS[value].name : axis === 'mode' ? MODES.filter(function (m) { return m.id === value; })[0].name : value === 'both' ? translate('Both') : VALUE_NAMES[value] };
@@ -942,6 +1141,7 @@
       link('clock', 'Time and date')
     ] }];
     if (t.group === 'addons' || t.group === 'addon-detail') return addonSections(t);
+    if (t.group === 'addon-settings') return addonSettingsSections(t);
     if (t.group === 'language') return [{ id: 'language', title: translate('Language'), horizontal: true, items: options('language', ['de', 'en']) }];
     if (t.group === 'clock') return [
       { id: 'clockFormat', title: translate('Time format'), horizontal: true, items: options('clockFormat', ['12h', '24h']) },
@@ -978,7 +1178,7 @@
         reason: inactive ? flat ? translate('Materials are available with a Photo background.') : translate('Choose Glass focus or the Dock layout to use materials.') : '' }
     ];
     if (t.group === 'rotation') return [{ id: 'mode', title: '', items: options('mode', MODES.map(function (m) { return m.id; }), flat),
-      reason: flat ? translate('Choose Photo in Background to use rotation.') : translate('Timed changes pause while Settings or another panel is open.') }];
+      reason: flat ? translate('Choose Photo in Background to use rotation.') : translate('Timed changes pause while Settings or another panel is open.') + ' ' + translate('Rotation uses your favourites, or every built-in wallpaper when there are none.') }];
     return [{ id: 'samsung', title: '', items: [
       { action: 'samsung.home', cap: 'home', label: ORIGINAL_HOME, description: ANDROID ? translate('Open original Home or its activation settings') : translate('Open Samsung’s Home screen') },
       { action: 'samsung.settings', cap: 'settings', label: translate('TV settings'), description: translate('Picture, sound and network settings') }
@@ -1042,6 +1242,7 @@
     if (!state.readOnly && candidate && (!current || ADDONS.newer(candidate, ADDONS.installedVersion(current, state.runtime)))) actions.push({ action: 'addon.install.' + item.id, label: translate(current ? 'Update' : 'Download'), disabled: busy });
     if (current) {
       if (item.kind === 'native') actions.push({ action: 'addon.setup.' + item.id, label: addonText('Set up'), disabled: busy });
+      else if (own(addonSettings, item.id) && current.enabled !== false) actions.push({ action: 'addon.settings.' + item.id, label: translate('Settings'), disabled: busy });
       else if (item.id === 'spotify') actions.push({ action: 'group.spotify', label: translate('Settings'), disabled: busy });
       actions.push({ action: 'addon.toggle.' + item.id, label: item.kind === 'native' && (!item.runtime || typeof item.runtime.enabled !== 'boolean') ? addonActivation(item) : translate(item.kind === 'native' ? item.runtime.enabled ? 'Disable' : 'Enable' : item.enabled === false ? 'Enable' : 'Disable'), disabled: busy || item.kind === 'native' && (!item.runtime || typeof item.runtime.enabled !== 'boolean') });
       actions.push({ action: 'addon.remove.' + item.id, label: translate('Uninstall'), disabled: busy });
@@ -1073,7 +1274,7 @@
   }
   function detailFocus(t, item, column) {
     t.f.action = item.action;
-    if (item.action !== 'settings.back') S.detailFocus[t.group] = item.action;
+    if (item.action !== 'settings.back') S.detailFocus[t.group === 'addon-settings' ? 'addon-settings.' + t.addonId : t.group] = item.action;
     if (column !== undefined) t.f.column = column;
     if (item.axis) S.appearanceFocus = item.axis;
   }
@@ -1097,6 +1298,7 @@
     var patch = {}, error = S.lookError;
     if (item.action === 'settings.back') { detailBack(); return; }
     if (item.disabled || S.pending) return;
+    if (t.group === 'addon-settings') { addonSettingsOk(t, item); return; }
     if (item.action === 'settings.retry') {
       if (error && error.patch[error.row] !== undefined) detailFocus(t, choice(error.row, error.patch[error.row]), 0);
       if (error && error.row === 'mode') applyRotation(error.patch.mode);
@@ -1111,7 +1313,8 @@
       if (parts[1] === 'tab') { t.addonTab = parts[2]; t.addonScroll = 0; }
       else if (parts[1] === 'details') { t.addonScroll = appearanceRows.scrollTop; openAppearance('addon-detail'); top().addonId = parts.slice(2).join('.'); }
       else if (parts[1] === 'setup') { SETUP.poll('remote'); openAppearance('remote'); }
-      else if (parts[1] === 'remove') push({ id: 'message', msg: 'addonRemove', addonId: addon.id, content: { title: translate('Uninstall add-on?'), line: addon.kind === 'native' ? addonText('Android will ask you to confirm removal. Pairings stored by this add-on are removed.') : translate('The widget is removed. Saved account and appearance settings are retained.'), actions: [['back', translate('Cancel')], ['addonRemove', translate('Uninstall')]] }, f: { b: 0 } });
+      else if (parts[1] === 'settings') openAddonSettings(parts.slice(2).join('.'));
+      else if (parts[1] === 'remove') push({ id: 'message', msg: 'addonRemove', addonId: addon.id, content: { title: translate('Uninstall add-on?'), line: addon.kind === 'native' ? addonText('Android will ask you to confirm removal. Pairings stored by this add-on are removed.') : addon.kind === 'wallpapers' ? translate('Its wallpapers and stored photos are removed. The built-in wallpapers stay.') : translate('The widget is removed. Saved account and appearance settings are retained.'), actions: [['back', translate('Cancel')], ['addonRemove', translate('Uninstall')]] }, f: { b: 0 } });
       else ADDONS.request(parts[1], parts.slice(2).join('.'));
     }
     else if (item.action.indexOf('group.') === 0) { if (item.action === 'group.editor') openEditor('settings'); else openAppearance(item.action.substring(6)); }
@@ -1140,7 +1343,8 @@
       var axis = { background: 'bg', layout: 'layout', typography: 'font', focus: 'focus', rotation: 'mode', clock: 'clockFormat', spotify: 'spotifyEnabled', language: 'language' }[t.group];
       rows.forEach(function (items) { items.forEach(function (item) {
         if (item.action === t.f.action) exists = true;
-        if (item.axis === axis && item.value === S.c[axis]) applied = item;
+        if (t.group === 'addon-settings') { if (item.radio && item.applied && !applied) applied = item; }
+        else if (item.axis === axis && item.value === S.c[axis]) applied = item;
       }); });
       if (!exists) detailFocus(t, applied || (rows[1] || rows[0])[0], 0);
       if (t.f.column === undefined) t.f.column = detailLocation(t).column;
@@ -1185,11 +1389,13 @@
   function press(k) {
     norm();
     var t = top();
+    // An add-on settings provider may take a key before the host does.
+    var hooked = t.id === 'appearance' && t.group === 'addon-settings' && addonSettingsKey(t, k);
     // OK first reveals hidden controls; it never fires an invisible transport button.
-    var spatial = ['left', 'right', 'up', 'down'].indexOf(k) >= 0 && !t.lifted
+    var spatial = !hooked && ['left', 'right', 'up', 'down'].indexOf(k) >= 0 && !t.lifted
       && !(t.id === 'appearance' && t.f.action === 'spotify.transparency' && (k === 'left' || k === 'right'));
     var moved = spatial && window.CleanFrameDesign && window.CleanFrameDesign.navigate(k, focusedAction(), focusElement);
-    if (!moved && !(t.id === 'home' && t.f.zone === 'spotify' && !spotifyAwake && k === 'ok')) V[t.id].key(t, k);
+    if (!hooked && !moved && !(t.id === 'home' && t.f.zone === 'spotify' && !spotifyAwake && k === 'ok')) V[t.id].key(t, k);
     spotifyActivity();
     norm();
     render();
@@ -1198,7 +1404,7 @@
 
   /* ---------- Rendering ---------- */
   var $ = function (id) { return document.getElementById(id); };
-  var stage = $('stage'), homeEl = $('home'), caption = $('caption'), utilsEl = $('utils');
+  var stage = $('stage'), homeEl = $('home'), caption = $('caption'), utilsEl = $('utils'), widgetSlot = $('cleantvWidgets');
   var spotifyEl = $('spotifyPlayer'), spotifyControls = $('spotifyControls');
   var utilFocusLabel = $('utilFocusLabel'), utilFocusKey = '', appFocusName = $('appFocusName');
   var dock = $('dock'), shelf = $('shelf'), track = $('track'), plate = $('plate'), matScrim = $('matScrim'), dockEmpty = $('dockEmpty');
@@ -1260,6 +1466,7 @@
     renderFocusStatus(t);
     renderSpotify();
     ADDONS.render(t.id === 'home' && !spotifyExpanded(), S.c.language);
+    placeAddonCards();
     syncSpotify();
     resolveVars();
     if (window.CleanFrameDesign) window.CleanFrameDesign.after({ view: t.id === 'appearance' ? 'appearance.' + t.group : t.id === 'message' ? 'message.' + t.msg : t.id, layout: S.c.layout, state: spotifyExpanded() ? 'expanded' : 'compact' });
@@ -1288,6 +1495,8 @@
     if (S.c.layout === 'list') renderList(hs);
     else { photoMode = null; renderDock(hs); }
     renderAppFocusName(hs);
+    // Host widgets below the clock; hidden in arrange mode and behind the expanded Spotify player.
+    WIDGETS.render(widgetCtx(hs));
   }
 
   function clockText() {
@@ -1834,15 +2043,15 @@
     V.appearance.norm(t);
     appearanceEl.className = 'appearance detail-' + t.group;
     appearanceRows.className = 'appearance-rows';
-    appearanceTitle.textContent = translate(DETAIL_NAMES[t.group]);
+    appearanceTitle.textContent = t.group === 'addon-settings' ? addonSettingsTitle(t) : translate(DETAIL_NAMES[t.group]);
     var at = detailLocation(t), selected = at.item, error = S.lookError, status = '', hint;
     function command(item, inner, cls) {
-      var applied = item.axis && S.c[item.axis] === item.value;
+      var radio = !!(item.axis || item.radio), applied = item.axis ? S.c[item.axis] === item.value : !!(item.radio && item.applied);
       var loading = !!(item.axis && S.pending && S.pending.target[item.axis] === item.value && S.pending.row === item.axis);
       return '<button type="button" tabindex="-1" class="setting-choice' + (cls ? ' ' + cls : '') + (t.f.action === item.action ? ' is-focus' : '') + (item.disabled ? ' is-disabled' : '') + (applied ? ' is-applied' : '') + (loading ? ' is-loading' : '') + '"'
-        + (item.axis ? ' role="radio" aria-checked="' + !!applied + '"' : item.tab ? ' role="tab" aria-selected="' + !!item.active + '"' : '') + ' aria-label="' + esc(item.axis && item.value === 'both' ? translate('Icons and text') : translate(item.label)) + '" aria-disabled="' + !!item.disabled + '" aria-busy="' + loading + '"'
+        + (radio ? ' role="radio" aria-checked="' + !!applied + '"' : item.tab ? ' role="tab" aria-selected="' + !!item.active + '"' : '') + ' aria-label="' + esc(item.axis && item.value === 'both' ? translate('Icons and text') : translate(item.label)) + '" aria-disabled="' + !!item.disabled + '" aria-busy="' + loading + '"'
         + ' data-z="detail" data-i="0" data-id="' + item.action + '" data-action="' + item.action + '">' + inner
-        + (item.axis ? '<span class="setting-tick" aria-hidden="true">' + (applied ? icon('check') : '') + '</span>' : '') + '</button>';
+        + (radio ? '<span class="setting-tick" aria-hidden="true">' + (applied ? icon('check') : '') + '</span>' : '') + '</button>';
     }
     setHTML(appearanceBack, command({ action: 'settings.back', label: detailParentName() }, icon('left') + '<span>' + (detailParentName()) + '</span>', 'setting-back'));
     if (t.group === 'software') { renderSoftwareUpdate(t, command); return; }
@@ -1853,16 +2062,16 @@
         + '<div class="setting-slider' + (t.f.action === 'spotify.transparency' ? ' is-selected' : '') + '"><input class="' + (t.f.action === 'spotify.transparency' ? 'is-focus' : '') + '" type="range" min="0" max="100" step="5" tabindex="-1" aria-label="' + translate('Transparency') + '" data-z="detail" data-i="0" data-id="spotify.transparency" data-action="spotify.transparency"><output></output></div>'
         + '<p class="setting-reason">' + translate('0% solid · 100% transparent') + '</p></section>';
       return '<section class="setting-section' + (section.horizontal ? ' is-horizontal' : '') + ' section-' + section.id + '">'
-        + (section.title ? '<h3 class="setting-label" id="setting-' + section.id + '">' + translate(section.title) + '</h3>' : '')
-        + '<div class="setting-options"' + (section.items[0].axis ? ' role="radiogroup" aria-label="' + esc(translate(section.title || LOOK_NAMES[section.id] || DETAIL_NAMES[t.group])) + '"' : '') + '>'
+        + (section.title ? '<h3 class="setting-label" id="setting-' + section.id + '">' + esc(translate(section.title)) + '</h3>' : '')
+        + '<div class="setting-options"' + (section.items[0].axis || section.items[0].radio ? ' role="radiogroup" aria-label="' + esc(translate(section.title || LOOK_NAMES[section.id] || DETAIL_NAMES[t.group])) + '"' : '') + '>'
         + section.items.map(function (item) {
           var swatch = item.axis === 'bg', body = '';
           if (swatch || item.thumbnail) body += item.value === 'light' || item.value === 'dark'
             ? '<span class="setting-swatch swatch-' + item.value + '" aria-hidden="true"></span>'
-            : '<img class="setting-swatch" src="' + WP + S.c.wall + '-thumb.jpg" alt="">';
+            : '<img class="setting-swatch" src="' + esc(wallSrc(S.c.wall, 'thumb')) + '" alt="">';
           body += '<span class="setting-copy"><span class="setting-name">' + esc(translate(item.label)) + '</span>'
             + (item.description ? '<span class="setting-description">' + esc(translate(item.description)) + '</span>' : '') + '</span>';
-          if (!item.axis) body += icon('right', 'setting-forward');
+          if (!item.axis && !item.radio) body += icon('right', 'setting-forward');
           return command(item, body, item.description ? 'has-description' : '');
         }).join('') + '</div>'
         + (section.reason ? '<p class="setting-reason">' + esc(translate(section.reason)) + '</p>' : '') + '</section>';
@@ -1879,7 +2088,7 @@
         + command({ action: 'settings.retry', label: translate('Try again') }, "<span>" + translate("Try again") + "</span>", 'setting-retry');
     }
     setHTML(appearanceStatus, status);
-    hint = selected.disabled ? '' : selected.action === 'settings.back' ? translate('Return to ') + (detailParentName()) : selected.action === 'settings.retry' ? translate('Retry this change') : selected.axis ? translate('Apply selected setting') : selected.action === 'background.wallpaper' ? translate('Choose a wallpaper') : selected.action === 'background.rotation' ? translate('Choose a rotation interval') : translate('Open on the TV');
+    hint = selected.disabled ? '' : selected.action === 'settings.back' ? translate('Return to ') + (detailParentName()) : selected.action === 'settings.retry' ? translate('Retry this change') : t.group === 'addon-settings' ? addonSettingsHint(selected) : selected.axis ? translate('Apply selected setting') : selected.action === 'background.wallpaper' ? translate('Choose a wallpaper') : selected.action === 'background.rotation' ? translate('Choose a rotation interval') : translate('Open on the TV');
     if (selected.action === 'spotify.transparency') { setHTML(appearanceDesc, icon('left') + icon('right') + '<span>' + translate('Adjust with Left and Right') + '</span>'); return; }
     setHTML(appearanceDesc, hint ? '<span class="remote-key">OK</span><span>' + esc(hint) + '</span>' : '');
   }
@@ -1890,13 +2099,18 @@
     appearanceRows.className = 'appearance-rows wallpaper-picker';
     setHTML(appearanceBack, '<button type="button" tabindex="-1" class="setting-choice setting-back' + (t.f.zone === 'back' ? ' is-focus' : '') + '" data-z="wall-back" data-action="wallpaper.back">' + icon('left') + "<span>" + translate("Background") + "</span></button>");
     setHTML(appearanceRows, '<div class="wallpaper-edge wallpaper-before" aria-hidden="true">' + icon('up') + '</div><div class="wallpaper-list" role="radiogroup" aria-label="Wallpaper"><div class="wallpaper-rows"></div></div><div class="wallpaper-edge wallpaper-after" aria-hidden="true">' + icon('down') + '</div>');
-    var rows = appearanceRows.querySelector('.wallpaper-rows'), shown = wall(S.wallShown) || wall(S.c.wall), candidate = WALLS[t.i], status, note, hint;
+    var rows = appearanceRows.querySelector('.wallpaper-rows'), shown = wall(S.wallShown) || wall(S.c.wall), candidate = WALLS[t.i], status, note, hint, extra;
     keyed(rows, WALLS.map(function (w) { return { key: w.id, wall: w }; }), function (row, item, i) {
-      var visible = i >= t.top && i < t.top + WALL_VISIBLE, w = item.wall, image;
-      setContent(row, w.id + '|' + visible, function () { return '<span class="wallpaper-thumb">' + (visible ? '<img src="' + WP + w.id + '-thumb.jpg" alt="">' : '') + '</span><span class="setting-copy"><span class="setting-name">' + esc(translate(w.name)) + '</span></span><span class="setting-tick" aria-hidden="true"></span>'; });
-      row.className = 'setting-choice wallpaper-choice' + (t.f.zone === 'photo' && t.i === i ? ' is-focus' : '') + (w.id === S.c.wall ? ' is-applied' : '');
+      // Only visible rows load a thumbnail; add-on thumbnails stream unless a local copy exists.
+      var visible = i >= t.top && i < t.top + WALL_VISIBLE, w = item.wall, image, star, on = favourite(w.id), thumb = visible ? wallSrc(w.id, 'thumb') : '';
+      setContent(row, w.id + '|' + visible + '|' + i + '|' + thumb, function () { return '<span class="wallpaper-thumb">' + (visible ? '<img src="' + esc(thumb) + '" alt="">' : '') + '</span><span class="setting-copy"><span class="setting-name">' + esc(wallName(w)) + '</span></span><span class="setting-tick" aria-hidden="true"></span><span class="wallpaper-star" role="checkbox" tabindex="-1" data-z="wall-star" data-i="' + i + '" data-action="wallpaper.star.' + w.id + '"></span>'; });
+      row.className = 'setting-choice wallpaper-choice' + (t.f.zone === 'photo' && t.i === i ? ' is-focus' : '') + (t.f.zone === 'star' && t.i === i ? ' is-star-row' : '') + (w.id === S.c.wall ? ' is-applied' : '');
       row.style.transform = 'translate3d(0,' + (i * WALL_ROW) + 'px,0)'; row.style.visibility = visible ? 'visible' : 'hidden';
-      row.setAttribute('role', 'radio'); row.setAttribute('tabindex', '-1'); row.setAttribute('aria-label', translate(w.name));
+      row.setAttribute('role', 'radio'); row.setAttribute('tabindex', '-1'); row.setAttribute('aria-label', wallName(w));
+      star = row.querySelector('.wallpaper-star');
+      star.className = 'wallpaper-star' + (on ? ' is-on' : '') + (t.f.zone === 'star' && t.i === i ? ' is-focus' : '');
+      star.setAttribute('aria-checked', String(on)); star.setAttribute('aria-label', translate('Favourite') + ': ' + wallName(w));
+      setHTML(star, icon('star'));
       row.setAttribute('aria-checked', String(w.id === S.c.wall)); row.setAttribute('aria-posinset', String(i + 1)); row.setAttribute('aria-setsize', String(WALLS.length));
       row.setAttribute('aria-busy', String(t.previewDue === w.id || S.wallPending === w.id));
       attrs(row, 'wall-choice', i, 'wallpaper.choose.' + w.id);
@@ -1913,10 +2127,13 @@
     appearanceRows.querySelector('.wallpaper-after').className = 'wallpaper-edge wallpaper-after' + (t.top + WALL_VISIBLE < WALLS.length ? ' is-on' : '');
     note = t.previewDue ? translate('Preparing ') + candidate.name + '…' : S.wallPending ? (t.applyPending ? translate('Applying ') : translate('Loading ')) + candidate.name + '…' : shown.id === S.c.wall ? translate('Applied') : translate('Preview');
     if (t.failedId) note = S.err ? translate('Couldn’t save ') + wall(t.failedId).name + '.' : translate('Couldn’t load ') + wall(t.failedId).name + '.';
-    status = '<p class="wallpaper-preview-name"><span>' + esc(translate(shown.name)) + '</span><span class="wallpaper-count">' + (wallIndex(shown.id) + 1) + translate(' of ') + WALLS.length + '</span></p><p class="wallpaper-preview-state' + (t.failedId ? ' setting-error' : '') + '">' + esc(note) + '</p>';
+    status = '<p class="wallpaper-preview-name"><span>' + esc(wallName(shown)) + '</span><span class="wallpaper-count">' + (wallIndex(shown.id) + 1) + translate(' of ') + WALLS.length + '</span></p><p class="wallpaper-preview-state' + (t.failedId ? ' setting-error' : '') + '">' + esc(note) + '</p>';
+    // A favourites hint, or the add-on module's storage or update message.
+    extra = t.favouriteFailed ? translate('Couldn’t save this change.') : t.notice ? translate(t.notice) : ADDON_WALLS && ADDON_WALLS.message() ? translate(ADDON_WALLS.message()) : '';
+    if (extra) status += '<p class="wallpaper-preview-note' + (t.favouriteFailed ? ' setting-error' : '') + '">' + esc(extra) + '</p>';
     if (t.failedId) status += '<button type="button" tabindex="-1" class="setting-choice setting-retry' + (t.f.zone === 'retry' ? ' is-focus' : '') + "\" data-z=\"wall-retry\" data-action=\"wallpaper.retry\">" + translate("Try again") + "</button>";
     setHTML(appearanceStatus, status);
-    hint = t.f.zone === 'back' ? translate('Return to Background') : t.f.zone === 'retry' ? translate('Retry this photo') : translate('Apply selected photo');
+    hint = t.f.zone === 'back' ? translate('Return to Background') : t.f.zone === 'retry' ? translate('Retry this photo') : t.f.zone === 'star' ? translate(favourite(candidate.id) ? 'Remove from favourites' : 'Add to favourites') : translate('Apply selected photo');
     if (t.f.zone === 'photo' && candidate.id === S.c.wall && !S.pending && !t.failedId) hint = '';
     setHTML(appearanceDesc, hint ? '<span class="remote-key">OK</span><span>' + hint + '</span>' : '');
   }
@@ -2084,11 +2301,12 @@
   /* ---------- Atomic appearance bundles ---------- */
   var wallToken = 0, committedBundle = null, reflowToken = 0, fontSwitchToken = 0;
   function registeredMaterial(id) { return S.c.bg === 'photo' && S.c.material === 'soft' && !!wall(id); }
-  function matSrc(id, material) { return 'assets/materials/' + id + (material === 'soft' ? '-study-soft.jpg' : material === 'tint' ? '-field-clear.jpg' : '-field-frost.jpg'); }
-  function fieldSrc(id, material) { return 'assets/materials/' + id + (material === 'soft' ? '-field-blur.jpg' : material === 'tint' ? '-field-clear.jpg' : '-field-frost.jpg'); }
+  function matSrc(id, material) { return wallSrc(id, material === 'soft' ? 'study-soft' : material === 'tint' ? 'field-clear' : 'field-frost'); }
+  function fieldSrc(id, material) { return wallSrc(id, material === 'soft' ? 'field-blur' : material === 'tint' ? 'field-clear' : 'field-frost'); }
   function makeImg(cls, src) { var im = document.createElement('img'); im.className = cls; im.alt = ''; im._src = src; im.src = src; return im; }
-  function whenReady(im, done) {
-    var fin = false, timer = setTimeout(function () { finish(!!(im.complete && im.naturalWidth)); }, document.hidden ? 20000 : 8000);
+  // Streamed add-on photos (slow) get longer than bundled files.
+  function whenReady(im, done, slow) {
+    var fin = false, timer = setTimeout(function () { finish(!!(im.complete && im.naturalWidth)); }, document.hidden ? slow ? 30000 : 20000 : slow ? 20000 : 8000);
     function finish(ok) { if (fin) return; fin = true; clearTimeout(timer); done(ok); }
     function ready() {
       // Hidden TV prelaunch may suspend decode even after a valid image loads.
@@ -2099,9 +2317,15 @@
     else { im.onload = ready; im.onerror = function () { finish(false); }; }
   }
   function swapImg(k, im) { var old = IMG[k]; if (old === im) return; im.style.cssText = old.style.cssText; if (old.id) im.id = old.id; old.parentNode.replaceChild(im, old); IMG[k] = im; }
-  function bundleKey(look) { return look.wall + '|' + look.material; }
+  // An add-on photo's revision is part of the key, so a replaced image loads again.
+  function bundleKey(look) { return look.wall + '|' + look.material + (remoteWall(look.wall) ? '|' + wall(look.wall).rev : ''); }
   function loadBundle(look, token, done) {
-    var imgs = { photo: makeImg('photo', WP + look.wall + '.jpg'), bg: makeImg('sheet-bg', WP + look.wall + '-panel.jpg') }, keys, left, allOk = true;
+    // An add-on photo first looks up its local copy; otherwise it streams.
+    if (remoteWall(look.wall)) ADDON_WALLS.resolve(look.wall, function () { if (token === wallToken) makeBundle(look, token, done, true); });
+    else makeBundle(look, token, done, false);
+  }
+  function makeBundle(look, token, done, slow) {
+    var imgs = { photo: makeImg('photo', wallSrc(look.wall, 'jpg')), bg: makeImg('sheet-bg', wallSrc(look.wall, 'panel')) }, keys, left, allOk = true;
     imgs.mat = makeImg('mat-img', matSrc(look.wall, look.material));
     imgs.field = makeImg('ph-field-img', fieldSrc(look.wall, look.material));
     imgs.fieldAlt = makeImg('ph-field-img', fieldSrc(look.wall, look.material));
@@ -2111,8 +2335,8 @@
     keys.forEach(function (k) { whenReady(imgs[k], function (ok) {
       allOk = allOk && ok;
       if (--left || token !== wallToken) return;
-      done(allOk ? { key: bundleKey(look), imgs: imgs } : null);
-    }); });
+      done(allOk ? { key: bundleKey(look), imgs: imgs, wall: look.wall } : null);
+    }, slow); });
   }
   function installBundle(bundle, look, previewOnly) {
     if (bundle) {
@@ -2122,6 +2346,7 @@
     S.shown = { bg: look.bg, wall: look.wall, material: look.material, font: look.font };
     phFields.concat(utFields).forEach(function (el) { var p = el._placement; if (p) fieldTransform(el, p.x, p.y, p.width, p.height); });
     S.wallShown = look.wall; S.wallPending = null; S.wallError = null;
+    if (ADDON_WALLS) ADDON_WALLS.sync();
   }
   function cleanPatch(patch) {
     var out = {}, k;
@@ -2219,6 +2444,14 @@
     clearTimeout(rotationTimer); rotationTimer = 0;
   }
   function resetRotation() { pauseRotation(); activeMs = 0; rotationKey = ''; }
+  /* The next photo in WALLS order: favourites that are available (built in, or add-on photos with a
+     local copy), or every built-in wallpaper when no favourite is available. */
+  function rotationNext(c) {
+    var list = WALLS.filter(function (w) { return c.favourites.indexOf(w.id) >= 0 && !w.gone && (!w.remote || ADDON_WALLS && ADDON_WALLS.stored(w.id)); }), at = wallIndex(c.wall), i, w;
+    if (!list.length) list = WALLS.filter(function (w) { return !w.remote; });
+    for (i = 1; i <= WALLS.length; i++) { w = WALLS[(at + i) % WALLS.length]; if (list.indexOf(w) >= 0) return w.id; }
+    return c.wall;
+  }
   function syncRotation() {
     var key = S.c.wall + '|' + S.c.mode;
     pauseRotation();
@@ -2226,14 +2459,18 @@
     if (!rotationActive()) return;
     activeSince = Date.now();
     rotationTimer = setTimeout(function () {
+      var target = rotationNext(S.c);
       pauseRotation(); activeMs = 0;
-      if (rotationActive()) setLook({ wall: WALLS[(wallIndex(S.c.wall) + 1) % WALLS.length].id }, { row: 'bg' });
+      // A single available favourite stays; the timer starts again.
+      if (rotationActive()) { if (target !== S.c.wall) setLook({ wall: target }, { row: 'bg' }); else syncRotation(); }
     }, Math.max(10, mode().min * QA.minuteMs - activeMs));
   }
   function updateClock() {
     if (S.c) ADDONS.render(top().id === 'home' && !spotifyExpanded(), S.c.language);
     clearTimeout(clockTimer);
     if (document.hidden) return;
+    // At most once a day while Home is visible, an installed add-on checks its wallpaper index.
+    if (ADDON_WALLS && S.c && top().id === 'home') ADDON_WALLS.home();
     if (top().id === 'home' || isSettingsDetail(top())) render();
     clockTimer = setTimeout(updateClock, 60000 - (Date.now() % 60000) + 30);
   }
@@ -2287,7 +2524,9 @@
     else if (t.id === 'appearance') {
       detailRows(t).forEach(function (row) { row.forEach(function (item, col) { if (item.action === action) detailFocus(t, item, col); }); });
     } else if (t.id === 'wallpaper') {
-      if (z === 'wall-choice') previewWallpaper(t, i, false); else f.zone = z === 'wall-back' ? 'back' : 'retry';
+      if (z === 'wall-choice') previewWallpaper(t, i, false);
+      else if (z === 'wall-star') { if (i !== t.i) previewWallpaper(t, i, false); f.zone = 'star'; }
+      else f.zone = z === 'wall-back' ? 'back' : 'retry';
     } else if (t.id === 'apps') { f.zone = z === 'grid' ? 'grid' : 'head'; f.i = i; S.appsFocus = appsItems()[i] || null; }
     else if (t.id === 'editor') {
       if (t.lifted) return false;
@@ -2444,12 +2683,44 @@
   QA.actions = function () { var view = isSettingsDetail(top()) ? appearanceEl : sheetEl.hidden ? homeEl : sheetEl; return Array.prototype.filter.call(view.querySelectorAll('[data-action]'), renderedAction).map(function (el) { return el.getAttribute('data-action'); }); };
 
   /* ---------- Start ---------- */
+  // Publish the host registries and replay registrations queued by modules that loaded first.
+  [['CleanTVAddonSettings', SETTINGS_API], ['CleanTVViews', VIEWS_API], ['CleanTVWidgets', WIDGETS]].forEach(function (entry) {
+    var early = window[entry[0]];
+    window[entry[0]] = entry[1];
+    if (early && Array.isArray(early.queue)) early.queue.forEach(function (args) { guarded(function () { entry[1].register.apply(entry[1], args); }); });
+  });
   cueL.innerHTML = icon('left'); cueR.innerHTML = icon('right');
   spotifyControls.innerHTML = spotifyCommands.map(function (command, i) { return '<button type="button" tabindex="-1" class="spotify-button" data-z="spotify" data-i="' + i + '" data-action="spotify.' + command + '"></button>'; }).join('');
   $('spotifyOpen').innerHTML = '<img src="assets/icons/spotify.svg" alt="">' + icon('right');
   ['spotify', 'spotifyCompact'].forEach(function (prefix) { $(prefix + 'Cover').onerror = function () { this.hidden = true; $(prefix + 'Fallback').hidden = false; }; });
   if (SPOTIFY) { try { spotifyState = FrameDevice.spotify.state(); spotifyAt = window.performance.now(); } catch (error) { spotifyState = { status: 'unavailable', errorMessage: error.message }; } }
   initialise();
+  // Add-on wallpapers follow the chosen photo, rotation and favourites; Home owns every switch.
+  if (ADDON_WALLS) ADDON_WALLS.bind({
+    state: function () {
+      // A Dark or Light background loads no bundle, so committedBundle may still name an earlier photo that is not shown.
+      var t = top(), use = [S.c.wall, S.wallShown, S.wallPending, S.shown && S.shown.wall, S.c.bg === 'photo' && committedBundle && committedBundle.wall, S.previewBundle && S.previewBundle.wall];
+      if (t.id === 'wallpaper') use.push(WALLS[t.i] && WALLS[t.i].id, t.applyPending, t.previewDue);
+      return { wall: S.c.wall, favourites: S.c.favourites.slice(), rotation: S.c.mode !== 'fixed', inUse: use.filter(function (id) { return typeof id === 'string' && !!id; }) };
+    },
+    // Entries change in place; an open picker keeps its candidate.
+    update: function (mutate) {
+      var t = top(), candidate = t.id === 'wallpaper' && WALLS[t.i] ? WALLS[t.i].id : null;
+      mutate();
+      if (candidate) t.i = wallIndex(candidate);
+      norm(); render();
+    },
+    // Before add-on entries are removed: the first built-in favourite, or the first built-in photo.
+    leave: function () {
+      var f = S.c.favourites, target = WALLS[0].id, i;
+      if (S.pending) return;
+      if (top().id === 'wallpaper') closeWallpaper(top());
+      for (i = WALLS.length - 1; i >= 0; i--) if (!WALLS[i].remote && f.indexOf(WALLS[i].id) >= 0) target = WALLS[i].id;
+      if (remoteWall(S.c.wall)) setLook({ wall: target }, { row: 'bg' });
+      render();
+    },
+    changed: function () { norm(); render(); }
+  });
   setLook({}, { transient: true, startup: true });
   norm(); render(); fit(); focusStage(); updateClock(); syncRotation();
   if (ANDROID) refreshCatalog();

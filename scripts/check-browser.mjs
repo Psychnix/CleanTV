@@ -18,6 +18,9 @@ const CATALOG = IDS.map((id, i) => ({ id, name: NAMES[i], show: true, iconPath: 
   { id: 'com.samsung.tv.cobalt-yt', name: 'YouTube', show: true }
 ]);
 const walls = JSON.parse(readFileSync(root + 'app/assets/wallpapers/SOURCES.json', 'utf8'));
+// Every origin config.xml allows; a request to one of them needs page.__allowExternal.
+const EXTERNAL = [...readFileSync(root + 'app/config.xml', 'utf8').matchAll(/<access origin="([^"]+)"/g)].map(m => m[1]);
+if (EXTERNAL.length < 7 || !EXTERNAL.includes('https://raw.githubusercontent.com')) throw Error('Unexpected config.xml origins: ' + EXTERNAL.join(', '));
 const out = root + '.local/qa/';
 mkdirSync(out, { recursive: true });
 const sourceFiles = ['app/main.js', 'app/device.js', 'app/index.html', 'app/style.css', 'app/config.xml', 'app/assets/wallpapers/SOURCES.json', 'app/assets/wallpapers/catalog.js', 'app/assets/adaptive-ink.js', 'app/assets/icons/metrics.js'];
@@ -108,8 +111,12 @@ async function page(options = {}, setup) {
   current.__expectedFailures = expected;
   current.on('pageerror', error => report.pageErrors.push({ section, error: error.message }));
   current.on('response', response => { if (response.status() >= 400 && !expected.some(s => response.url().includes(s))) report.pageErrors.push({ section, status: response.status(), url: response.url() }); });
-  // The Tizen add-on host contacts the catalog only after an explicit refresh.
-  current.on('request', request => { if (/^https:\/\/raw\.githubusercontent\.com\//.test(request.url()) && !owner.__allowCatalog) report.pageErrors.push({ section, unexpectedCatalogRequest: request.url() }); });
+  // No reviewed external origin is contacted without an explicit opt-in (startup never contacts one).
+  current.on('request', request => {
+    let origin = '';
+    try { origin = new URL(request.url()).origin; } catch { origin = ''; }
+    if (EXTERNAL.includes(origin) && !(owner.__allowExternal || []).includes(origin)) report.pageErrors.push({ section, unexpectedExternalRequest: request.url() });
+  });
   current.on('requestfailed', request => {
     if (owner.__closing) return;
     const failure = { section, url: request.url(), error: request.failure()?.errorText };
@@ -580,34 +587,217 @@ try {
     const samsungActions = await call('actions');
     check('Samsung group shows both native actions', samsungActions.includes('samsung.home') && samsungActions.includes('samsung.settings'));
   });
-  await run('Tizen add-on catalog is read only on request', async () => {
-    const URL = 'https://raw.githubusercontent.com/AntoinS/cleanframe-addons/main/catalog-v2.json', sha = 'a'.repeat(64);
-    const entry = (id, extra) => ({ api: 1, id, name: 'Note ' + id, version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'Hello', path: 'packages/' + id + '/1.0.0.json', sha256: sha, ...extra });
+  await run('Tizen add-ons: catalog, install, storage and settings', async () => {
+    const BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', CATALOG_URL = BASE + 'cleantv-catalog.json', sha = 'a'.repeat(64);
+    const pkg = (id, extra) => ({ api: 1, id, name: 'Note ' + id, version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'Hello from ' + id, ...extra });
+    const packages = { note: pkg('note'), plain: pkg('plain') };
+    const listed = item => ({ ...item, path: 'packages/' + item.id + '/' + item.version + '.json', sha256: createHash('sha256').update(JSON.stringify(item)).digest('hex') });
     const upstream = [{ api: 1, id: 'spotify', name: 'Spotify', version: '1.0.0', kind: 'spotify', description: 'Player', author: 'QA', license: 'MIT', path: 'packages/spotify/1.0.0.json', sha256: sha },
       { api: 2, id: 'apple-remote', name: 'iPhone Remote', version: '0.1.2', kind: 'native', description: 'Remote', author: 'QA', license: 'MIT', sha256: sha }];
-    let body = { api: 2, addons: upstream }, requests = 0, fail = false;
-    const serve = async p => p.route(URL, route => { requests++; return fail ? route.abort() : route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) }); });
+    let body = { api: 2, addons: upstream }, requests = 0, downloads = [], fail = false;
+    const cors = { 'access-control-allow-origin': '*' };
+    const serve = async p => {
+      await p.route(CATALOG_URL, route => { requests++; return fail ? route.abort() : route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify(body) }); });
+      await p.route(BASE + 'packages/**', route => {
+        const id = route.request().url().split('/').slice(-2)[0];
+        downloads.push(id);
+        return packages[id] ? route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify(packages[id]) }) : route.fulfill({ status: 404, headers: cors, body: 'missing' });
+      });
+      // A tiny settings provider for "note" only, queued before main.js publishes the registry.
+      await p.addInitScript(() => {
+        const queue = window.CleanTVAddonSettings = { queue: [] };
+        queue.register = function () { queue.queue.push(Array.prototype.slice.call(arguments)); };
+        queue.register('note', {
+          title: language => language === 'de' ? 'QA Notiz' : 'QA note settings',
+          sections: () => [{ id: 'qa', title: 'QA <b>row</b>', horizontal: true, items: [
+            { action: 'cleantv.qa.toggle', label: 'Bold', axis: 'qa', value: true, applied: !!window.__qaOn },
+            { action: 'cleantv.qa.location', label: 'Change location' },
+            { action: 'settings.back', label: 'Spoofed host action' }] }],
+          ok: item => { if (item.action !== 'cleantv.qa.toggle') return false; window.__qaOn = !window.__qaOn; window.__qaOk = (window.__qaOk || 0) + 1; return true; }
+        });
+      });
+    };
+    const installed = id => current.waitForFunction(id => CleanFrameAddons.state().installed[id] && !CleanFrameAddons.state().busy, id);
     await page({}, serve);
-    check('Startup sends no catalog request', requests === 0);
+    check('Startup sends no catalog or package request', requests === 0 && downloads.length === 0);
+    const slot = await current.evaluate(() => { const el = document.getElementById('cleantvWidgets'); return { parent: el.parentElement.id, previous: el.previousElementSibling && el.previousElementSibling.id, inScene: !!el.closest('#phScene') }; });
+    check('The widget slot follows the caption inside Home, outside the photo list', slot.parent === 'home' && slot.previous === 'caption' && !slot.inScene, slot);
     await scene('settings');
     check('Settings lists Add-ons when the TV host exists', (await call('actions')).includes('settings.group.addons'));
-    current.__allowCatalog = true;
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
     await act('settings.group.addons'); await act('addon.tab.discover');
     check('Discover before a refresh asks for one', /Refresh the catalog/.test(await current.locator('#addonEmpty').textContent()) && requests === 0);
     await act('addon.refresh');
     await current.waitForFunction(() => /Catalog checked/.test(document.getElementById('addonEmpty')?.textContent || ''));
     check('Refresh reports the checked catalog without Android entries', requests === 1 && /Catalog checked · 2 entries · 0 for this TV/.test(await current.locator('#addonEmpty').textContent()) && !(await call('actions')).some(a => /^addon\.details\.(spotify|apple-remote)$/.test(a)));
-    body = { api: 2, addons: upstream.concat([entry('note')]) };
+    body = { api: 2, addons: upstream.concat([listed(packages.note), listed(packages.plain)]) };
     await act('addon.refresh');
     await current.waitForFunction(() => document.querySelector('[data-action="addon.details.note"]'));
     await act('addon.details.note');
-    const actions = await call('actions');
-    check('A compatible widget is shown read-only without Download', !actions.some(a => /^addon\.(install|setup|toggle|remove)\./.test(a)) && !actions.includes('group.spotify'), actions);
+    let actions = await call('actions');
+    check('A compatible widget offers Download and no settings before installation', actions.includes('addon.install.note') && !actions.some(a => /^addon\.(settings|toggle|remove|setup)\./.test(a)), actions);
+    await act('addon.install.note'); await installed('note');
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.settings.note"]'));
+    actions = await call('actions');
+    check('The verified package is installed once and its registered settings appear', downloads.join() === 'note' && actions.includes('addon.toggle.note') && actions.includes('addon.remove.note') && actions.includes('addon.settings.note') && !actions.includes('addon.install.note'), { downloads, actions });
+    await act('addon.settings.note');
+    let s = await state();
+    const settingsView = await current.evaluate(() => ({ title: document.getElementById('appearanceTitle').textContent, heading: document.querySelector('#appearanceRows .setting-label')?.innerHTML, radio: document.querySelector('[data-action="cleantv.qa.toggle"]')?.getAttribute('aria-checked'), spoof: !!document.querySelector('#appearanceRows [data-action="settings.back"]') }));
+    check('Add-on settings render through the appearance rows', s.settingsGroup === 'addon-settings' && settingsView.title === 'QA note settings' && settingsView.radio === 'false' && !settingsView.spoof && settingsView.heading === 'QA &lt;b&gt;row&lt;/b&gt;', settingsView);
+    await act('cleantv.qa.toggle');
+    check('OK reaches the provider and the row reflects its state', await current.evaluate(() => window.__qaOk === 1 && document.querySelector('[data-action="cleantv.qa.toggle"]').getAttribute('aria-checked') === 'true'));
+    check('Provider choices never change Home preferences', !Object.prototype.hasOwnProperty.call((await stored()), 'qa'));
+    const hint = () => current.locator('#appearanceDesc').innerText();
+    check('A radio provider row hints that OK applies it', (await state()).focusAction === 'cleantv.qa.toggle' && /Apply selected setting/.test(await hint()), await hint());
+    await nav('right');
+    const opener = await current.evaluate(() => !!document.querySelector('[data-action="cleantv.qa.location"] .setting-forward'));
+    check('A provider row without axis shows a chevron and the Open hint', (await state()).focusAction === 'cleantv.qa.location' && opener && /^OK\s*Open$/.test((await hint()).trim()), { focus: (await state()).focusAction, opener, hint: await hint() });
     await nav('back');
+    s = await state();
+    check('Back returns from add-on settings to the detail view', s.settingsGroup === 'addon-detail' && (await call('actions')).includes('addon.settings.note'), s.settingsGroup);
+    await nav('back'); await act('addon.tab.discover'); await act('addon.details.plain'); await act('addon.install.plain'); await installed('plain');
+    actions = await call('actions');
+    check('An add-on without a registered provider has no settings button', actions.includes('addon.toggle.plain') && !actions.includes('addon.settings.plain'), actions);
+    await nav('back'); await act('addon.details.note'); await act('addon.toggle.note');
+    await current.waitForFunction(() => CleanFrameAddons.state().installed.note.enabled === false);
+    check('A disabled add-on hides its settings button', !(await call('actions')).includes('addon.settings.note'));
+    await act('addon.toggle.note');
+    await current.waitForFunction(() => CleanFrameAddons.state().installed.note.enabled !== false);
+    await scene('home');
+    const cards = () => current.evaluate(() => [...document.querySelectorAll('#addonWidgets .addon-widget')].filter(e => e.getClientRects().length).map(e => e.getAttribute('data-addon') + ':' + e.querySelector('p').textContent));
+    check('Installed widgets appear on Home', same(await cards(), ['note:Hello from note', 'plain:Hello from plain']), await cards());
+    const keys = await current.evaluate(() => Object.keys(localStorage).sort());
+    check('Only the add-on slots were added to storage', same(keys.filter(k => k !== 'cleantv.home.v1'), ['cleantv.addons.v1.a', 'cleantv.addons.v1.b']), keys);
+    const before = requests;
+    current.__allowExternal = [];
+    await current.reload(); await ready(); await current.waitForLoadState('networkidle');
+    check('Installed widgets survive a reload without network', requests === before && downloads.length === 2 && same(await cards(), ['note:Hello from note', 'plain:Hello from plain']), { requests, downloads });
+    await scene('settings'); await act('settings.group.addons');
+    actions = await call('actions');
+    check('Installed add-ons are listed after the reload', actions.includes('addon.details.note') && actions.includes('addon.details.plain'), actions);
+    await act('addon.tab.discover');
+    const offline = await current.evaluate(() => CleanFrameAddons.state().catalogInfo);
+    check('Discover shows the stored catalog offline', (await call('actions')).includes('addon.details.plain') && same(offline, { checked: true, total: 4, compatible: 2 }), offline);
+    await act('addon.details.note');
+    check('The settings button survives the reload', (await call('actions')).includes('addon.settings.note'));
+    await nav('back');
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
     fail = true; current.__expectedFailures.push('raw.githubusercontent.com');
     await act('addon.refresh');
-    await current.waitForFunction(() => /could not be loaded|no connection/.test(document.getElementById('appearanceStatus')?.textContent || ''));
-    check('A failed refresh keeps the last catalog and names the cause', !!(await current.$('[data-action="addon.details.note"]')) && /no connection, certificate or access policy/.test(await current.locator('#appearanceStatus').textContent()));
+    await current.waitForFunction(() => /no connection/.test(document.getElementById('appearanceStatus')?.textContent || ''));
+    check('A failed refresh keeps the stored catalog and names the cause', !!(await current.$('[data-action="addon.details.note"]')) && /no connection, certificate or access policy/.test(await current.locator('#appearanceStatus').textContent()));
+  });
+  await run('CleanTV widget slot geometry, ink and glass', async () => {
+    // A queued test widget and a queued view, registered before main.js loads.
+    const setup = p => p.addInitScript(() => {
+      const queued = name => { if (window[name]) return window[name]; const r = window[name] = { queue: [] }; r.register = function () { r.queue.push(Array.prototype.slice.call(arguments)); }; return r; };
+      window.__widgetCalls = [];
+      queued('CleanTVWidgets').register('qa', { order: 2, render: (el, ctx) => {
+        window.__widgetCalls.push(ctx);
+        if (window.__widgetEmpty) { el.innerHTML = ''; return; }
+        if (!el.firstChild) el.innerHTML = '<span class="cw-title">QA weather</span><span class="cw-big">21°</span><span class="cw-small">Wind 12 km/h</span>' + window.CleanTVIcon('<circle cx="24" cy="24" r="10"/>', 40);
+      } });
+      queued('CleanTVWidgets').register('qa-first', { order: 1, render: el => { if (!el.firstChild) el.innerHTML = '<span class="cw-small">First</span>'; } });
+    });
+    await page({}, setup);
+    await scene('home');
+    const geometry = () => current.evaluate(() => {
+      const slot = document.getElementById('cleantvWidgets'), cards = [...slot.children], visible = cards.filter(c => c.getClientRects().length);
+      const r = slot.getBoundingClientRect(), clock = document.querySelector('.caption .clock').getBoundingClientRect(), u = document.getElementById('utils').getBoundingClientRect();
+      const card = visible[visible.length - 1], field = card && card.querySelector('.cw-field'), img = card && card.querySelector('.cw-field img');
+      const cs = card && getComputedStyle(card);
+      return { order: cards.map(c => c.getAttribute('data-widget')), visible: visible.length, hidden: slot.hidden, left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), clockRight: Math.round(clock.right), utilsBottom: Math.round(u.bottom),
+        card: card && { left: card.offsetLeft + slot.offsetLeft, top: card.offsetTop + slot.offsetTop, width: card.offsetWidth, height: card.offsetHeight, transform: field.style.transform, src: img.getAttribute('src') || '', glass: getComputedStyle(card.querySelector('.cw-glass')).display, background: cs.backgroundColor, color: cs.color, shadow: cs.textShadow, padding: cs.padding, radius: cs.borderRadius },
+        clockColor: getComputedStyle(document.querySelector('.caption .clock')).color, stage: document.getElementById('stage').className };
+    });
+    let g = await geometry();
+    check('Widgets keep registration order by `order` and reuse their cards', same(g.order, ['qa-first', 'qa']) && g.visible === 2, g);
+    check('Dock slot sits at left 140, top 260 below the clock and date', g.left === 140 && g.top === 260 && !g.hidden, g);
+    check('Photo cards use the registered material field aligned to the stage', /assets\/materials\/.*-field-(blur|frost|clear)\.jpg$/.test(g.card.src) && g.card.glass === 'block' && new RegExp('^translate(3d)?\\(' + (-g.card.left) + 'px, ?' + (-g.card.top) + 'px').test(g.card.transform), g.card);
+    check('Card contract: padding 20px 24px, radius 24px, clock ink and two-layer shadow', g.card.padding === '20px 24px' && g.card.radius === '24px' && g.card.color === g.clockColor && (g.card.shadow.match(/rgba?\(/g) || []).length === 2, g.card);
+    const typeScale = await current.evaluate(() => ['cw-title', 'cw-big', 'cw-small'].map(c => { const s = getComputedStyle(document.querySelector('#cleantvWidgets .' + c)); return [c, s.fontSize, s.lineHeight, s.fontVariantNumeric, s.opacity].join(' '); }));
+    check('Type classes follow the contract', same(typeScale, ['cw-title 28px 36px normal 0.8', 'cw-big 48px 56px tabular-nums 1', 'cw-small 28px 36px tabular-nums 0.8']), typeScale);
+    const iconMarkup = await current.evaluate(() => { const svg = document.querySelector('#cleantvWidgets .cw-icon'); return svg && [svg.getAttribute('viewBox'), svg.getAttribute('width'), svg.querySelector('.ut-underlay') && svg.querySelector('.ut-underlay').getAttribute('transform'), !!svg.querySelector('.ut-ink circle')].join('|'); });
+    check('CleanTVIcon builds the underlay and ink layers on a 48 grid', iconMarkup === '0 0 48 48|40|translate(0 .5)|true', iconMarkup);
+    await call('preferences', { dateVisible: false }); await scene('home');
+    g = await geometry();
+    check('Dock slot moves to top 220 without the date', g.top === 220, g);
+    await look({ layout: 'list' }); await call('preferences', { dateVisible: true }); await scene('home');
+    g = await geometry();
+    check('List slot is right-aligned to the clock at top 300', g.right === 1780 && g.right === g.clockRight && g.top === 300, g);
+    check('List cards use the top-right ink', g.card.color === g.clockColor, g.card);
+    await call('preferences', { dateVisible: false }); await scene('home');
+    check('List slot moves to top 260 without the date', (await geometry()).top === 260);
+    await call('preferences', { controlsPosition: 'top' }); await scene('home');
+    g = await geometry();
+    check('List with top controls places the slot 40px below them', g.top === g.utilsBottom + 40 && g.right === 1780, g);
+    await look({ bg: 'dark' }); await scene('home');
+    g = await geometry();
+    check('Flat backgrounds get a flat translucent plate without shadow', g.card.glass === 'none' && g.card.background !== 'rgba(0, 0, 0, 0)' && g.card.shadow === 'none' && g.card.src === '', g.card);
+    await current.evaluate(() => { window.__widgetEmpty = true; });
+    await scene('home');
+    g = await geometry();
+    check('An empty widget hides its card', g.visible === 1 && same(g.order, ['qa-first', 'qa']), g);
+    const calls = await current.evaluate(() => window.__widgetCalls.slice(-1)[0]);
+    check('Widgets receive language, layout, background and visibility', same(Object.keys(calls).sort(), ['bg', 'language', 'layout', 'visible']) && calls.layout === 'list' && calls.bg === 'dark' && calls.visible === true, calls);
+    check('Widget plates use no live filters', (await noLiveFilters()).length === 0, await noLiveFilters());
+  });
+  await run('CleanTV widgets beside text cards and after late data', async () => {
+    // One enabled text add-on in its stored slot, and a host widget whose data arrives after it registered.
+    const data = JSON.stringify({ installed: { note: { api: 1, id: 'note', name: 'Note', version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'A text card next to host widgets', enabled: true } }, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } });
+    const record = JSON.stringify({ v: 1, seq: 1, sum: createHash('sha256').update(data).digest('hex'), data });
+    await page({}, p => p.addInitScript(r => { if (!localStorage.getItem('cleantv.addons.v1.a')) localStorage.setItem('cleantv.addons.v1.a', r); }, record));
+    await scene('home');
+    await current.evaluate(() => {
+      window.CleanTVWidgets.register('late', { order: 1, render: (el, ctx) => { window.__late = el; window.__lateCtx = ctx; } });
+      window.CleanTVWidgets.refresh();
+    });
+    const fill = html => current.evaluate(h => { window.__late.innerHTML = h; }, html);
+    const refresh = () => current.evaluate(() => window.CleanTVWidgets.refresh());
+    const layout = () => current.evaluate(() => {
+      const box = e => { const r = e.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) }; };
+      const shown = sel => [...document.querySelectorAll(sel)].filter(e => e.getClientRects().length).map(box);
+      const slot = document.getElementById('cleantvWidgets'), card = slot.querySelector('[data-widget="late"]');
+      const move = card && /^translate(?:3d)?\((-?[0-9.]+)px, ?(-?[0-9.]+)px/.exec(card.querySelector('.cw-field').style.transform);
+      return { text: shown('#addonWidgets .addon-widget'), host: shown('#cleantvWidgets .cw-card'), slotBottom: Math.round(slot.getBoundingClientRect().bottom),
+        card: card && { hidden: card.hidden, shown: card.getClientRects().length > 0, left: card.offsetLeft + slot.offsetLeft, top: card.offsetTop + slot.offsetTop, right: Math.round(card.getBoundingClientRect().right), x: move && +move[1], y: move && +move[2] } };
+    });
+    const apart = g => g.text.length > 0 && g.host.length > 0 && g.text.every(a => g.host.every(b => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top));
+    const aligned = c => c.x === -c.left && c.y === -c.top;
+    let g = await layout();
+    check('A late widget without data keeps its card hidden', g.card && g.card.hidden && !g.card.shown && same(g.text.map(r => [r.left, r.top]), [[1000, 260]]), g);
+    await fill('<span class="cw-big">21°</span>');
+    check('Filling the element alone does not show the card', (await layout()).card.hidden);
+    await refresh();
+    g = await layout();
+    check('refresh() shows the filled card with its plate aligned', !g.card.hidden && g.card.shown && aligned(g.card), g.card);
+    await fill('<span class="cw-big">' + 'Leichter Regen und Wind '.repeat(8) + '</span>'); await refresh();
+    g = await layout();
+    check('A Dock card stays clear of the text cards at x 1000', g.card.right <= 980 && apart(g) && same(g.text.map(r => [r.left, r.top]), [[1000, 260]]) && aligned(g.card), g);
+    await look({ layout: 'list' }); await scene('home');
+    await fill('<span class="cw-big">21°</span>'); await refresh();
+    const narrow = (await layout()).card;
+    await fill('<span class="cw-big">21° Leichter Regen</span>'); await refresh();
+    g = await layout();
+    check('A List card that grows keeps its plate aligned after refresh()', g.card.left < narrow.left && g.card.right === 1780 && aligned(g.card), { narrow, card: g.card });
+    for (const [name, patch] of [['List', {}], ['List without the date', { dateVisible: false }], ['List with top controls', { controlsPosition: 'top' }]]) {
+      if (Object.keys(patch).length) { await call('preferences', patch); await scene('home'); }
+      g = await layout();
+      check(name + ': text cards stack right-aligned below the host widgets', apart(g) && g.text.every(r => r.right === 1780) && g.text[0].top === g.slotBottom, g);
+    }
+    await call('preferences', { controlsPosition: 'auto', dateVisible: true }); await scene('home');
+    await fill(''); await refresh();
+    g = await layout();
+    check('Without a visible host card the text cards keep their own place', g.host.length === 0 && same(g.text.map(r => [r.left, r.top]), [[1000, 260]]), g);
+    await current.evaluate(() => window.CleanTVWidgets.render({ visible: true, layout: 'dock', bg: 'bogus', language: 'xx' }));
+    const ctx = await current.evaluate(() => window.__lateCtx);
+    check('Widgets always receive the host context', same(ctx, { language: 'en', layout: 'list', bg: 'photo', visible: true }), ctx);
+    await fill('<span class="cw-big">21°</span>'); await refresh();
+    await scene('settings');
+    await fill(''); await refresh();
+    check('refresh() does nothing while a sheet is open', (await layout()).card.hidden === false);
+    await scene('home');
+    check('The next Home render picks up the change', (await layout()).card.hidden === true);
   });
   await run('Settings focus never changes the applied Home', async () => {
     await page();
@@ -1065,6 +1255,186 @@ try {
     check('Browser launch honestly requires TV', /TV/.test(await current.locator('#stage').innerText()));
     await nav('back'); await library();
     check('Browser All Apps has no installed fixtures', /TV/.test(await current.locator('#stage').innerText()) && !(await current.locator('[data-action^="apps.open."]').count()));
+  });
+  await run('Add-on wallpapers: streamed picker, favourites, rotation, reload and removal', async () => {
+    const BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', CATALOG_URL = BASE + 'cleantv-catalog.json', INDEX_URL = BASE + 'cleantv-wallpapers/index.json';
+    const cors = { 'access-control-allow-origin': '*' };
+    const FILES = { jpg: 'image.jpg', thumb: 'thumb.jpg', panel: 'panel.jpg', 'study-soft': 'study-soft.jpg', 'field-blur': 'field-blur.jpg', 'field-frost': 'field-frost.jpg', 'field-clear': 'field-clear.jpg' };
+    const asset = (id, role) => root + 'app/assets/' + (role === 'jpg' ? 'wallpapers/' + id + '.jpg' : role === 'thumb' || role === 'panel' ? 'wallpapers/' + id + '-' + role + '.jpg' : 'materials/' + id + '-' + role + '.jpg');
+    // Bundled JPEGs stand in for generated output under add-on IDs; twelve photos, so a favourite can be the eleventh.
+    const named = [['aw-berg', 'Berg am See', 'summit'], ['aw-see', 'Stiller See', 'alpine'], ['aw-tal', 'Weites Tal', 'amber']];
+    // The longest title the generator and the module allow: 120 characters from a file name.
+    const LONG = 'Sonnenuntergang ueber dem Wattenmeer bei Ebbe mit Prielen Moewen und einem einsamen Leuchtturm am fernen Horizont Herbst';
+    const photos = named.concat(Array.from({ length: 9 }, (_, i) => ['aw-extra-' + (i + 1), i === 8 ? LONG : 'Extra ' + (i + 1), 'mint'])).map(([id, title, from]) => {
+      const bytes = Object.fromEntries(Object.keys(FILES).map(role => [role, readFileSync(asset(from, role))]));
+      const files = Object.fromEntries(Object.entries(bytes).map(([role, data]) => [role, { path: 'cleantv-wallpapers/generated/' + id + '/' + FILES[role], size: data.length, sha256: createHash('sha256').update(data).digest('hex') }]));
+      return { id, title, bytes, entry: { id, title, rev: files.jpg.sha256.slice(0, 12), tone: 'light', ut: { tr: 'mist', br: 'light' }, frostVeil: 0.2, files } };
+    });
+    const pkg = { api: 1, id: 'cleantv-wallpapers', name: 'Wallpapers', version: '1.0.0', kind: 'wallpapers', description: 'Own photos', author: 'QA', license: 'MIT', index: 'cleantv-wallpapers/index.json' };
+    const listing = { ...pkg, path: 'cleantv-packages/cleantv-wallpapers/1.0.0.json', sha256: createHash('sha256').update(JSON.stringify(pkg)).digest('hex') };
+    const requests = [];
+    const serve = async p => {
+      p.on('request', request => { if (request.url().startsWith(BASE)) requests.push({ url: request.url(), type: request.resourceType() }); });
+      await p.route(CATALOG_URL, route => route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify({ api: 2, addons: [listing] }) }));
+      await p.route(BASE + listing.path, route => route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify(pkg) }));
+      await p.route(INDEX_URL, route => route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify({ api: 1, entries: photos.map(x => x.entry) }) }));
+      await p.route(BASE + 'cleantv-wallpapers/generated/**', route => {
+        const [id, file] = route.request().url().split('/').slice(-2), photo = photos.find(x => x.id === id), role = Object.keys(FILES).find(r => FILES[r] === file);
+        // Stiller See streams but cannot be downloaded, so rotation must skip it.
+        if (!photo || !role || id === 'aw-see' && route.request().resourceType() !== 'image') return route.fulfill({ status: 404, headers: cors, body: 'missing' });
+        return route.fulfill({ status: 200, contentType: 'image/jpeg', headers: cors, body: photo.bytes[role] });
+      });
+    };
+    const downloads = () => requests.filter(r => r.type !== 'image' && r.url.includes('/generated/'));
+    const thumbs = () => requests.filter(r => r.url.endsWith('/thumb.jpg')).map(r => r.url.split('/').slice(-2)[0]);
+    const storedCopy = id => current.waitForFunction(id => window.CleanTVWallpapers.stored(id), id, { timeout: 20000 });
+    const hint = () => current.locator('#appearanceDesc').innerText();
+    const starred = () => current.evaluate(() => [...document.querySelectorAll('.wallpaper-star[aria-checked="true"]')].map(e => e.getAttribute('data-action').slice(15)));
+    await page({ minuteMs: 120 }, serve);
+    check('Startup without the add-on sends no wallpaper request', requests.length === 0, requests);
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
+    current.__expectedFailures.push('/generated/aw-see/');
+    await scene('settings'); await act('settings.group.addons'); await act('addon.tab.discover'); await act('addon.refresh');
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.details.cleantv-wallpapers"]'));
+    await act('addon.details.cleantv-wallpapers'); await act('addon.install.cleantv-wallpapers');
+    await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    const ids = await current.evaluate(() => CleanFrameWallpapers.map(w => w.id));
+    check('Install fetches the index once and appends the add-on photos after the built-ins', same(ids, walls.map(w => w.id).concat(photos.map(x => x.id))) && requests.filter(r => r.url === INDEX_URL).length === 1 && !downloads().length, { ids, requests });
+
+    await wallpaper();
+    const names = await current.locator('.wallpaper-choice .setting-name').allTextContents();
+    check('The picker names every photo, add-on titles as they are', same(names, walls.map(w => w.name).concat(photos.map(x => x.title))), names);
+    check('Hidden add-on rows stream no thumbnail', !thumbs().length, thumbs());
+    await nav('right');
+    check('Right moves from a photo to its star', (await state()).focusAction === 'wallpaper.star.' + walls[0].id && (await call('where')).focusCount === 1 && /Add to favourites/.test(await hint()), { focus: (await state()).focusAction, hint: await hint() });
+    await nav('ok');
+    check('OK stars the photo and saves the favourite', same((await stored()).favourites, [walls[0].id]) && same(await starred(), [walls[0].id]) && /Remove from favourites/.test(await hint()));
+    await nav('ok');
+    check('OK again removes the star', same((await stored()).favourites, []) && same(await starred(), []));
+    await nav('down'); await wallpaperSettled(walls[1].id);
+    check('Up and Down keep the star column while browsing', (await state()).focusAction === 'wallpaper.star.' + walls[1].id && (await state()).wallpaperPicker.candidate === walls[1].id);
+    await nav('left');
+    check('Left returns from the star to its photo', (await state()).focusAction === 'wallpaper.choose.' + walls[1].id);
+    const geometry = await current.evaluate(() => [...document.querySelectorAll('.wallpaper-choice')].filter(r => getComputedStyle(r).visibility !== 'hidden').map(row => {
+      const r = row.getBoundingClientRect(), star = row.querySelector('.wallpaper-star').getBoundingClientRect(), name = row.querySelector('.setting-name').getBoundingClientRect(), tick = row.querySelector('.setting-tick').getBoundingClientRect();
+      return star.left >= r.left && star.right <= r.right && star.top >= r.top && star.bottom <= r.bottom && name.right <= star.left && tick.right <= star.left;
+    }));
+    check('Each visible star sits inside its row, right of the name and tick', geometry.length >= 5 && geometry.every(Boolean), geometry);
+
+    // To Berg am See (row 16): only rows that become visible stream their thumbnails.
+    await nav(...Array(14).fill('down')); await wallpaperSettled('aw-berg');
+    check('Only visible add-on rows stream thumbnails', same(thumbs(), ['aw-berg']), thumbs());
+    check('A browsed add-on photo streams and saves nothing', (await state()).shown.wall === 'aw-berg' && (await stored()).wallpaper === walls[0].id && !downloads().length
+      && (await wallpaperBundle()).photo === BASE + 'cleantv-wallpapers/generated/aw-berg/image.jpg', await wallpaperBundle());
+    await nav('ok'); await ready();
+    check('OK applies the add-on photo', (await state()).committed.wall === 'aw-berg' && same(await wallpaperApplied(), ['wallpaper.choose.aw-berg']));
+    await storedCopy('aw-berg');
+    check('Only the chosen photo is downloaded: seven verified files', same(downloads().map(r => r.url.split('/').slice(-2).join('/')).sort(), Object.values(FILES).map(f => 'aw-berg/' + f).sort()), downloads());
+    await nav('right', 'ok');
+    await nav(...Array(6).fill('up')); await wallpaperSettled('summit'); await nav('ok');
+    await nav(...Array(7).fill('down')); await wallpaperSettled('aw-see'); await nav('ok');
+    check('Stars mark add-on and built-in photos alike, in starring order', same((await stored()).favourites, ['aw-berg', 'summit', 'aw-see']), (await stored()).favourites);
+    await nav('back'); await ready();
+    check('Back keeps the applied add-on photo', (await state()).shown.wall === 'aw-berg');
+
+    // Rotation over favourites, in WALLS order, skipping Stiller See (no local copy).
+    await act('background.rotation'); await act('rotation.5');
+    check('The rotation reason explains favourites', /favourites/.test(await current.locator('#appearanceRows').innerText()));
+    await scene('home');
+    const seen = [];
+    for (let i = 0; i < 4; i++) {
+      const before = (await state()).wallpaper;
+      await current.waitForFunction(id => ShoreQA.state().wallpaper !== id && !ShoreQA.state().pending, before, { timeout: 8000 });
+      seen.push((await state()).wallpaper);
+    }
+    check('Rotation alternates over the available favourites only', same(seen, ['summit', 'aw-berg', 'summit', 'aw-berg']), seen);
+    await current.waitForFunction(() => ShoreQA.state().wallpaper === 'aw-berg' && !ShoreQA.state().pending);
+    check('A stored add-on photo rotates in from its local copy', (await wallpaperBundle()).photo.startsWith('blob:'), await wallpaperBundle());
+    check('Rotation tried to keep the add-on favourites locally', downloads().some(r => r.url.includes('/aw-see/')) && !(await current.evaluate(() => window.CleanTVWallpapers.stored('aw-see'))));
+
+    // An eleventh add-on favourite keeps its star but gets the storage hint.
+    await call('preferences', { mode: 'fixed', wall: 'aw-berg', favourites: photos.slice(3).map(x => x.id).concat(['aw-berg']) }); await ready();
+    await call('preferences', { mode: '60' });
+    await wallpaper();
+    await nav('down'); await wallpaperSettled('aw-see'); await nav('right', 'ok');
+    const eleventh = await stored();
+    check('An eleventh add-on favourite is starred with a hint that ten are kept', eleventh.favourites.length === 11 && eleventh.favourites.at(-1) === 'aw-see' && /At most 10 add-on favourites/.test(await current.locator('#appearanceStatus').innerText()), eleventh.favourites);
+    await nav('left');
+    check('The hint disappears with the next key', !/At most 10/.test(await current.locator('#appearanceStatus').innerText()));
+    await nav('back'); await ready();
+    await act('background.rotation'); await act('rotation.fixed');
+    await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote && w.id !== ShoreQA.state().committed.wall && window.CleanTVWallpapers.stored(w.id)), null, { timeout: 20000 });
+    check('Rotation off keeps only the chosen add-on photo locally; the stars stay', (await stored()).favourites.length === 11 && await current.evaluate(() => CleanFrameWallpapers.filter(w => w.remote && window.CleanTVWallpapers.stored(w.id)).map(w => w.id).join()) === (await state()).committed.wall);
+
+    // Reload: the saved add-on ID survives start-up validation and its local copy needs no network.
+    await look({ wall: 'aw-berg' }); await storedCopy('aw-berg');
+    current.__allowExternal = []; const count = requests.length;
+    await current.reload(); await ready(); await current.waitForLoadState('networkidle');
+    check('After a reload the add-on photo is still chosen and shown from its local copy', (await state()).committed.wall === 'aw-berg' && (await wallpaperBundle()).photo.startsWith('blob:') && requests.length === count, { bundle: await wallpaperBundle(), requests: requests.slice(count) });
+    check('Favourites survive the reload', (await stored()).favourites.length === 11);
+
+    // A 120-character add-on title ends with an ellipsis wherever the chosen photo is named, and wraps in the picker status.
+    current.__allowExternal = ['https://raw.githubusercontent.com'];
+    await look({ wall: 'aw-extra-9' });
+    const clipped = (name, limit) => current.evaluate(([name, limit]) => {
+      const el = document.querySelector(name), edge = document.querySelector(limit), style = getComputedStyle(el), box = el.getBoundingClientRect(), range = document.createRange();
+      range.selectNodeContents(el);
+      // Text past its box stays visible unless overflow clips it.
+      const right = style.overflowX === 'visible' ? Math.max(box.right, range.getBoundingClientRect().right) : box.right;
+      return { text: el.textContent, right, limit: edge.getBoundingClientRect().left, ellipsis: el.scrollWidth > el.clientWidth && style.textOverflow === 'ellipsis' };
+    }, [name, limit]);
+    await group('background');
+    const detailRow = await clipped('.section-wall .setting-name', '.section-wall .setting-forward');
+    check('A long add-on title ends with an ellipsis before the chevron of the Background row', detailRow.text === LONG && detailRow.right <= detailRow.limit + 0.5 && detailRow.ellipsis, detailRow);
+    await scene('settings');
+    const overviewRow = await clipped('.settings-group[data-id="background"] .settings-group-value', '.settings-group[data-id="background"] > .ico');
+    check('A long add-on title ends with an ellipsis before the chevron in the Settings overview', overviewRow.text === LONG && overviewRow.right <= overviewRow.limit + 0.5 && overviewRow.ellipsis, overviewRow);
+    await wallpaper();
+    const caption = await current.evaluate(() => {
+      const status = document.getElementById('appearanceStatus').getBoundingClientRect(), name = document.querySelector('.wallpaper-preview-name').getBoundingClientRect();
+      const row = document.querySelector('[data-action="wallpaper.choose.aw-extra-9"]'), title = row.querySelector('.setting-name'), style = getComputedStyle(title);
+      return { status: [status.left, status.right, status.bottom], name: [name.left, name.right, name.bottom], rowName: title.getBoundingClientRect().right, star: row.querySelector('.wallpaper-star').getBoundingClientRect().left,
+        rowEllipsis: title.scrollWidth > title.clientWidth && style.overflowX === 'hidden' && style.textOverflow === 'ellipsis' };
+    });
+    check('In the picker a long title wraps inside the status and ends with an ellipsis before the star',
+      caption.name[0] >= caption.status[0] && caption.name[1] <= caption.status[1] && caption.status[2] <= 1080 && caption.rowName <= caption.star && caption.rowEllipsis, caption);
+    await nav('back'); await ready();
+
+    // Removal switches to the first built-in favourite first, then removes the entries and their data.
+    await call('preferences', { favourites: ['summit', 'aw-berg'] });
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.remove.cleantv-wallpapers');
+    check('The removal dialog names the wallpapers', /Its wallpapers and stored photos are removed/.test(await current.locator('#sheet').innerText()));
+    await act('message.addonRemove');
+    await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote), null, { timeout: 15000 });
+    const after = await current.evaluate(async () => ({ wall: ShoreQA.state().committed.wall, keys: Object.keys(localStorage).filter(k => k.startsWith('cleantv.wallpapers')), dbs: indexedDB.databases ? (await indexedDB.databases()).map(d => d.name) : [] }));
+    check('Removal keeps a built-in photo and leaves no add-on data', after.wall === 'summit' && !after.keys.length && !after.dbs.includes('cleantv-wallpapers'), after);
+
+    // With Background Dark or Light the last applied add-on photo is not shown: Disable and removal finish at once.
+    const reinstall = async () => {
+      await scene('settings'); await act('settings.group.addons'); await act('addon.tab.discover'); await act('addon.refresh');
+      await current.waitForFunction(() => document.querySelector('[data-action="addon.details.cleantv-wallpapers"]'));
+      await act('addon.details.cleantv-wallpapers'); await act('addon.install.cleantv-wallpapers');
+      await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    };
+    const leftAddon = async () => {
+      const gone = await current.waitForFunction(() => !CleanFrameWallpapers.some(w => w.remote), null, { timeout: 15000 }).then(() => true, () => false);
+      return current.evaluate(async gone => ({ gone, wall: ShoreQA.state().committed.wall, bg: ShoreQA.state().committed.bg, remote: CleanFrameWallpapers.filter(w => w.remote).length,
+        keys: Object.keys(localStorage).filter(k => k.startsWith('cleantv.wallpapers')), dbs: indexedDB.databases ? (await indexedDB.databases()).map(d => d.name) : [] }), gone);
+    };
+    const darkAddonPhoto = async () => {
+      await look({ bg: 'photo', wall: 'aw-berg' }); await storedCopy('aw-berg');
+      await look({ bg: 'dark' });
+    };
+    await reinstall(); await darkAddonPhoto();
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.toggle.cleantv-wallpapers');
+    const disabled = await leftAddon();
+    check('Disable with Background Dark leaves the add-on photos and keeps their data', disabled.gone && walls.some(w => w.id === disabled.wall) && disabled.bg === 'dark' && disabled.keys.length > 0 && disabled.dbs.includes('cleantv-wallpapers'), disabled);
+    await act('addon.toggle.cleantv-wallpapers');
+    await current.waitForFunction(() => CleanFrameWallpapers.filter(w => w.remote).length === 12);
+    await darkAddonPhoto();
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-wallpapers'); await act('addon.remove.cleantv-wallpapers'); await act('message.addonRemove');
+    const removed = await leftAddon();
+    check('Removal with Background Dark finishes: a built-in photo, no entries, no record and no database', removed.gone && walls.some(w => w.id === removed.wall) && removed.bg === 'dark' && !removed.keys.length && !removed.dbs.includes('cleantv-wallpapers'), removed);
   });
   section = 'Run integrity';
   report.sourceAfter = hashes();

@@ -2,6 +2,7 @@
 // (/home/) and with the forced resolver (/home/?legacy=1); computed styles must agree. Synthetic
 // stylesheets compare the resolver with the engine directly, sabotaged resolvers must be caught,
 // and a pass with custom properties reported missing runs the old-engine gates. No TV.
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { openPreview, root } from './browser.mjs';
 
@@ -10,6 +11,9 @@ const IDS = ['IkWsFHtOY9.Stremio', 'org.tizen.netflix-app', 'MCmYXNxgcu.DisneyPl
 const NAMES = ['Stremio', 'Netflix', 'Disney+', 'YouTube', 'Apple TV', 'Prime Video', 'ABC iview', 'SBS On Demand', 'Apple Music'];
 const CATALOG = IDS.map((id, i) => ({ id, name: NAMES[i], show: true, iconPath: '' })).concat([{ id: 'AbCdEf1234.FamilyApp', name: 'Family TV', show: true, iconPath: '' }]);
 const SEED = { dock: PRIMARY, wallpaper: 'misty', mode: 'fixed', lastApp: 'netflix', theme: 'shore' };
+// An installed text widget in the Tizen host's two-slot record (tizen-store.js), with no host widget registered.
+const ADDON_DATA = JSON.stringify({ installed: { note: { api: 1, id: 'note', name: 'Note', version: '1.0.0', kind: 'text', description: 'Short note', author: 'QA', license: 'MIT', text: 'Hello from the legacy check', enabled: true } }, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } });
+const ADDONS = JSON.stringify({ v: 1, seq: 1, sum: createHash('sha256').update(ADDON_DATA).digest('hex'), data: ADDON_DATA });
 // Computed on every rendered element of the stage, plus html and body.
 const PROPS = ['display', 'visibility', 'opacity', 'color', 'background-color', 'background-image', 'box-shadow', 'text-shadow',
   'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color', 'border-top-width', 'border-left-width',
@@ -21,8 +25,8 @@ const PSEUDO = ['content', 'opacity', 'background-color', 'background-image', 'b
 // beside font-variant-numeric:tabular-nums, which Chromium 47 lacks; the rendered digits are the same.
 function expected(prop, rec) { return prop === 'font-feature-settings' && rec[prop] === 'normal' && /tabular-nums/.test(rec['font-variant-numeric']) ? '"tnum"' : rec[prop]; }
 
-function harness({ catalog, seed, adaptive }) {
-  if (!sessionStorage.getItem('__seeded')) { localStorage.setItem('cleantv.home.v1', JSON.stringify(seed)); sessionStorage.setItem('__seeded', '1'); }
+function harness({ catalog, seed, adaptive, addons }) {
+  if (!sessionStorage.getItem('__seeded')) { localStorage.setItem('cleantv.home.v1', JSON.stringify(seed)); if (addons) localStorage.setItem('cleantv.addons.v1.a', addons); sessionStorage.setItem('__seeded', '1'); }
   // Legacy engines run without adaptive ink, so the main pass compares both renderings without it.
   if (!adaptive) Object.defineProperty(window, 'CleanFrameAdaptiveInk', { configurable: true, get: () => ({}), set: () => {} });
   // A fixed wall clock keeps clock and date widths identical; timers keep the real Date.now.
@@ -184,7 +188,7 @@ function synthetic([c, html]) {
   return { error, diffs, text, notes: r ? r.diagnostics.notes : [], strays };
 }
 
-const STATES = [], EXTENDED = [];
+const STATES = [], EXTENDED = [], WIDGETS = [], CARDS = [];
 let target = STATES;
 function state(name, prefs, steps = []) { if (!process.env.CHECK_STATE || name.toLowerCase().includes(process.env.CHECK_STATE.toLowerCase())) target.push({ name, prefs, steps }); }
 const base = { bg: 'photo', wall: 'misty', layout: 'dock', apps: 'both', controls: 'icons', focus: 'glass', material: 'soft', font: 'manrope', controlsPosition: 'auto', language: 'en', dateVisible: true };
@@ -218,6 +222,9 @@ state('Settings add-ons discover, light, German', look({ bg: 'light', language: 
 state('Settings layout detail, dark list', look({ bg: 'dark', layout: 'list' }), [['scene', 'settings'], ['act', 'settings.group.layout'], ['nav', 'down']]);
 state('Settings focus detail, light type', look({ bg: 'light', focus: 'type' }), [['scene', 'settings'], ['act', 'settings.group.focus']]);
 state('Wallpaper picker', look({ wall: 'summit' }), [['scene', 'settings'], ['act', 'settings.group.background'], ['act', 'background.wallpaper']]);
+// Favourites stars, filled and outlined, with the remote focus on a star.
+state('Wallpaper picker, favourites star', look({ wall: 'summit', favourites: ['summit', 'golden'] }), [['scene', 'settings'], ['act', 'settings.group.background'], ['act', 'background.wallpaper'], ['nav', 'right']]);
+state('Wallpaper picker, favourites, German', look({ wall: 'peaks', language: 'de', favourites: ['cove', 'peaks'] }), [['scene', 'settings'], ['act', 'settings.group.background'], ['act', 'background.wallpaper'], ['nav', 'right']]);
 state('All apps, photo glass', look({ wall: 'cove' }), [['scene', 'apps'], ['nav', 'down']]);
 state('All apps, dark type', look({ bg: 'dark', focus: 'type' }), [['scene', 'apps']]);
 state('Home editor, light', look({ bg: 'light' }), [['scene', 'editor'], ['focus', 'editor.move.youtube'], ['nav', 'right']]);
@@ -238,18 +245,31 @@ state('tint goldcoast list, all apps', look({ wall: 'goldcoast', layout: 'list',
 state('tint alpine dock, editor', look({ wall: 'alpine', material: 'tint' }), [['scene', 'editor']]);
 state('tint misty dock, utility', look({ wall: 'misty', material: 'tint', controls: 'both' }), [['nav', 'up']]);
 state('tint cove dock, focus detail', look({ wall: 'cove', material: 'tint' }), [['scene', 'settings'], ['act', 'settings.group.focus']]);
+// A stored text widget renders in #addonWidgets; the CleanTV widget slot stays empty without a host widget.
+target = WIDGETS;
+state('installed text widget, empty widget slot, photo dock', look({ wall: 'golden' }));
+state('installed text widget, empty widget slot, dark list', look({ bg: 'dark', layout: 'list', dateVisible: false }));
+state('installed text widget, settings add-ons', look({ wall: 'peaks' }), [['scene', 'settings'], ['act', 'settings.group.addons']]);
+// A host widget card resolves --cw-* and its registered glass plate on every background family.
+target = CARDS;
+state('widget card, photo misty dock', look({ wall: 'misty' }));
+state('widget card, photo peaks dock', look({ wall: 'peaks' }));
+state('widget card, photo peaks list', look({ wall: 'peaks', layout: 'list' }));
+state('widget card, photo cove list, top controls', look({ wall: 'cove', layout: 'list', controlsPosition: 'top' }));
+state('widget card, light dock, no date', look({ bg: 'light', dateVisible: false }));
+state('widget card, dark list', look({ bg: 'dark', layout: 'list' }));
 
 const failures = [], notes = [];
 let compared = { states: 0, elements: 0, values: 0, intentional: 0 };
 function fail(name, detail) { failures.push({ name, detail }); console.error('FAIL ' + name + (detail ? ': ' + JSON.stringify(detail).slice(0, 1500) : '')); }
 
-async function open(preview, query, { extra, adaptive, legacySource, mainSource, wait = true } = {}) {
+async function open(preview, query, { extra, adaptive, addons, legacySource, mainSource, wait = true } = {}) {
   const page = await preview.browser.newPage({ viewport: { width: 1920, height: 1080 } });
   page.setDefaultTimeout(15000);
   page.__errors = [];
   page.on('pageerror', error => page.__errors.push(error.message));
   page.on('response', response => { if (response.status() >= 400) page.__errors.push(response.status() + ' ' + response.url()); });
-  await page.addInitScript(harness, { catalog: CATALOG, seed: SEED, adaptive: !!adaptive });
+  await page.addInitScript(harness, { catalog: CATALOG, seed: SEED, adaptive: !!adaptive, addons: addons ? ADDONS : '' });
   if (extra) await page.addInitScript(extra);
   if (legacySource) await page.route('**/legacy.js', route => route.fulfill({ status: 200, contentType: 'text/javascript', body: legacySource }));
   if (mainSource) await page.route('**/main.js', route => route.fulfill({ status: 200, contentType: 'text/javascript', body: mainSource }));
@@ -335,6 +355,25 @@ try {
   if (EXTENDED.length) {
     extended = [await open(preview, '', { adaptive: true }), await open(preview, '?legacy=1', { adaptive: true })];
     await pass(extended[0], extended[1], EXTENDED);
+  }
+  if (WIDGETS.length) {
+    const pair = [await open(preview, '', { addons: true }), await open(preview, '?legacy=1', { addons: true })];
+    extended = extended.concat(pair);
+    const shown = await pair[1].evaluate(() => { const slot = document.getElementById('cleantvWidgets'); return { card: document.querySelector('#addonWidgets .addon-widget p')?.textContent, slot: !!slot && slot.parentElement.id === 'home' && slot.children.length === 0 }; });
+    if (shown.card !== 'Hello from the legacy check' || !shown.slot) fail('Stored text widget and empty widget slot render', shown);
+    await pass(pair[0], pair[1], WIDGETS);
+  }
+  if (CARDS.length) {
+    const widget = () => {
+      const queue = window.CleanTVWidgets = { queue: [] };
+      queue.register = function () { queue.queue.push(Array.prototype.slice.call(arguments)); };
+      queue.register('qa', { render: el => { if (!el.firstChild) el.innerHTML = '<span class="cw-title">Berlin</span><span class="cw-big">' + window.CleanTVIcon('<circle cx="24" cy="24" r="9"/>', 48) + '21°</span><span class="cw-small">Wind 12 km/h</span>'; } });
+    };
+    const pair = [await open(preview, '', { extra: widget }), await open(preview, '?legacy=1', { extra: widget })];
+    extended = extended.concat(pair);
+    const card = await pair[1].evaluate(() => { const el = document.querySelector('#cleantvWidgets .cw-card'); return el && el.getClientRects().length ? getComputedStyle(el).color : null; });
+    if (!card) fail('A registered widget card renders under the resolver', card);
+    await pass(pair[0], pair[1], CARDS);
   }
 
   // The resolver against the engine on synthetic stylesheets; documented limitations must be reported.
@@ -500,7 +539,7 @@ try {
   const tabular = await page.evaluate(() => document.querySelector('.clock-digit') ? getComputedStyle(document.querySelector('.clock-digit')).width : 'none');
   check('without font-variant-numeric the clock cell matches the tabular measurement', tabular === cell && tabular !== 'none', { tabular, cell });
   for (const p of old) { if (p.__errors.length) fail('Old engine: no page errors', p.__errors); await p.close(); }
-  if (!process.env.CHECK_STATE && compared.states !== STATES.length + EXTENDED.length) fail('Every state is compared', compared);
+  if (!process.env.CHECK_STATE && compared.states !== STATES.length + EXTENDED.length + WIDGETS.length + CARDS.length) fail('Every state is compared', compared);
   console.log('Coverage: ' + compared.states + ' states, ' + compared.elements + ' element snapshots, ' + compared.values + ' computed values, ' + PROPS.length + ' properties (+' + PSEUDO.length + ' on ::before/::after); ' + compared.intentional + ' required tnum differences; ' + synthetics + '/' + SYNTHETIC.length + ' synthetic sheets; ' + compared.old + ' old-engine checks.');
   console.log('apply() timings (ms): first ' + stats.first.toFixed(2) + ', compile ' + stats.compile.toFixed(2) + ', last change in a render ' + (stats.lastChange || 0).toFixed(2));
   console.log('  desktop: ' + JSON.stringify(fast, (k, v) => typeof v === 'number' ? +v.toFixed(3) : v));
