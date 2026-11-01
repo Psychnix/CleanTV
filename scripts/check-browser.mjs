@@ -799,6 +799,194 @@ try {
     await scene('home');
     check('The next Home render picks up the change', (await layout()).card.hidden === true);
   });
+  await run('Weather add-on: install, place keyboard, widget slots and legibility', async () => {
+    // Routed catalog, package and Open-Meteo/OpenPLZ answers from recorded fixtures; nothing leaves the machine.
+    const BASE = 'https://raw.githubusercontent.com/Psychnix/cleanframe-addons/main/', FX = JSON.parse(readFileSync(root + 'scripts/fixtures/weather-api.json', 'utf8'));
+    const WEATHER = { api: 1, id: 'cleantv-weather', name: 'Wetter', version: '1.0.0', kind: 'weather', description: 'Aktuelles Wetter unter der Uhr', author: 'Psychnix', license: 'MIT' };
+    const entry = { ...WEATHER, path: 'cleantv-packages/cleantv-weather/1.0.0.json', sha256: createHash('sha256').update(JSON.stringify(WEATHER)).digest('hex') };
+    const ORIGINS = ['https://raw.githubusercontent.com', 'https://api.open-meteo.com', 'https://geocoding-api.open-meteo.com', 'https://openplzapi.org'];
+    const cors = { 'access-control-allow-origin': '*' }, seen = [];
+    const json = (route, body) => route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(body) });
+    const key = u => u.searchParams.get('name') + (u.searchParams.get('countryCode') ? '|' + u.searchParams.get('countryCode') : '');
+    const serve = async p => {
+      await p.route(BASE + 'cleantv-catalog.json', r => { seen.push('catalog'); return json(r, { api: 2, addons: [entry] }); });
+      await p.route(BASE + 'cleantv-packages/**', r => { seen.push('package'); return r.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: JSON.stringify(WEATHER) }); });
+      await p.route('https://geocoding-api.open-meteo.com/**', r => { const u = new URL(r.request().url()); seen.push('geocoding ' + key(u)); return json(r, FX.geocoding[key(u)] || {}); });
+      await p.route('https://openplzapi.org/**', r => { const u = new URL(r.request().url()), k = u.pathname.split('/')[1] + '/' + u.searchParams.get('postalCode'); seen.push('openplz ' + k); return json(r, FX.openplz[k] || []); });
+      await p.route('https://api.open-meteo.com/**', r => {
+        seen.push('forecast');
+        // The recorded answer, dated today and tomorrow in Bonn (UTC+1) so the high and low apply.
+        const f = JSON.parse(JSON.stringify(FX.forecast)), day = n => new Date(Date.now() + 3600000 + n * 86400000).toISOString().slice(0, 10);
+        f.daily.time = [day(0), day(1)];
+        return json(r, f);
+      });
+    };
+    await page({}, serve);
+    check('Startup with the weather module but no package requests nothing', seen.length === 0, seen);
+    const card = '#cleantvWidgets [data-widget="cleantv-weather"]';
+    check('Without the package there is no weather card', await current.evaluate(sel => { const c = document.querySelector(sel); return !c || c.hidden; }, card));
+    current.__allowExternal = ORIGINS.slice(0, 1);
+    await scene('settings'); await act('settings.group.addons'); await act('addon.tab.discover'); await act('addon.refresh');
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.details.cleantv-weather"]'));
+    await act('addon.details.cleantv-weather'); await act('addon.install.cleantv-weather');
+    await current.waitForFunction(() => CleanFrameAddons.state().installed['cleantv-weather'] && !CleanFrameAddons.state().busy);
+    await current.waitForFunction(() => document.querySelector('[data-action="addon.settings.cleantv-weather"]'));
+    check('Installing fetches only the catalog and the package', same(seen, ['catalog', 'package']), seen);
+    await act('addon.settings.cleantv-weather');
+    const rows = await current.evaluate(() => ({ title: document.getElementById('appearanceTitle').textContent, actions: ShoreQA.actions().filter(a => a.indexOf('cleantv.weather.') === 0), reasons: [...document.querySelectorAll('#appearanceRows .setting-reason')].map(e => e.textContent) }));
+    check('Weather settings list the place and five display toggles with the credits', rows.title === 'Weather' && same(rows.actions, ['cleantv.weather.place', 'cleantv.weather.show.name', 'cleantv.weather.show.temp', 'cleantv.weather.show.range', 'cleantv.weather.show.wind', 'cleantv.weather.show.icon']) && /Open-Meteo\.com \(CC BY 4\.0\).*GeoNames \(CC BY 4\.0\).*OpenPLZ \(ODbL\)/.test(rows.reasons.join(' ')), rows);
+    const fits = await current.evaluate(() => { const rows = document.getElementById('appearanceRows').getBoundingClientRect(), hint = document.getElementById('appearanceDesc').getBoundingClientRect(), scale = document.getElementById('stage').getBoundingClientRect().width / 1920; return { bottom: Math.round(rows.bottom / scale), hint: Math.round(hint.top / scale) }; });
+    check('The settings rows end above the OK hint', fits.bottom <= fits.hint, fits);
+    check('Choosing nothing yet requests no weather data', same(seen, ['catalog', 'package']), seen);
+
+    // The place keyboard, driven by the remote: arrows and OK on the on-screen keys.
+    current.__allowExternal = ORIGINS;
+    await act('cleantv.weather.place');
+    await current.waitForFunction(() => ShoreQA.where().view === 'cleantv.weather.keyboard');
+    const layout = await current.evaluate(() => CleanTVKeyboard.layout());
+    const at = id => { for (let r = 0; r < layout.length; r++) for (const k of layout[r]) if (k.id === id) return { r, c: k.col }; throw Error('No key ' + id); };
+    const focusKey = async () => (await call('where')).focusAction.replace('cleantv.kb.', '');
+    async function press(id) {
+      const target = at(id);
+      for (let i = 0; i < 24; i++) {
+        const now = await focusKey();
+        if (now === id) { await nav('ok'); return; }
+        const here = at(now);
+        await nav(here.r < target.r ? 'down' : here.r > target.r ? 'up' : here.c < target.c ? 'right' : 'left');
+      }
+      throw Error('The remote could not reach key ' + id);
+    }
+    let where = await call('where');
+    check('The keyboard opens with focus on A and one focused key', where.focusAction === 'cleantv.kb.a' && where.focusCount === 1, where);
+    const startsAt = seen.length;
+    for (const ch of 'bonn') await press(ch);
+    const typed = () => current.locator('.kb-value').textContent();
+    check('Remote typing capitalises the first letter', await typed() === 'Bonn', await typed());
+    await current.waitForFunction(() => document.querySelector('[data-action="cleantv.kb.pick.0"]'));
+    const suggestions = await current.evaluate(() => [...document.querySelectorAll('.kb-item')].filter(e => !e.hidden).map(e => e.querySelector('.kb-name').textContent + ' | ' + e.querySelector('.kb-detail').textContent));
+    check('One debounced name search lists the places', same(seen.slice(startsAt), ['geocoding Bonn']) && suggestions[0] === 'Bonn | Nordrhein-Westfalen', { seen: seen.slice(startsAt), suggestions });
+    for (let i = 0; i < 12 && !(await call('where')).focusAction.startsWith('cleantv.kb.pick.'); i++) await nav('right');
+    where = await call('where');
+    check('Right from the last key column enters the suggestions', where.focusAction === 'cleantv.kb.pick.0' && where.focusCount === 1, where);
+    await nav('ok');
+    await current.waitForFunction(() => ShoreQA.state().settingsGroup === 'addon-settings');
+    await current.waitForFunction(() => CleanTVWeather.state().forecast);
+    check('OK on a suggestion saves the place, closes the keyboard and loads the forecast', (await current.evaluate(() => CleanTVWeather.state().place.name)) === 'Bonn' && seen[seen.length - 1] === 'forecast');
+    await current.waitForFunction(() => /^As of \d\d:\d\d/.test(document.querySelector('.section-cleantv-weather-place .setting-reason')?.textContent || ''));
+    check('The settings show the place and the time of the data', /Bonn/.test(await current.locator('[data-action="cleantv.weather.place"]').textContent()));
+
+    // Remote digits for postal codes; Backspace deletes there, Back leaves without saving.
+    await act('cleantv.weather.place');
+    await current.waitForFunction(() => ShoreQA.where().view === 'cleantv.weather.keyboard');
+    await current.keyboard.type('53111');
+    await current.waitForFunction(() => document.querySelector('[data-action="cleantv.kb.pick.0"]'));
+    check('Digit keys type a postal code and list its places', await typed() === '53111' && /53111 · Nordrhein-Westfalen/.test(await current.locator('.kb-item:not([hidden])').first().textContent()) && seen.includes('openplz de/53111'), seen);
+    await current.keyboard.press('Backspace');
+    check('Backspace deletes in the keyboard instead of leaving it', await typed() === '5311' && (await call('where')).view === 'cleantv.weather.keyboard');
+    await nav('back');
+    check('Back closes the keyboard and keeps the place', (await state()).settingsGroup === 'addon-settings' && (await current.evaluate(() => CleanTVWeather.state().place.detail)) === 'Nordrhein-Westfalen');
+
+    // One display toggle through the settings row; the Home preview keeps the slots.
+    await act('cleantv.weather.show.wind');
+    const toggled = await current.evaluate(() => ({ tick: document.querySelector('[data-action="cleantv.weather.show.wind"]').getAttribute('aria-checked'), wind: document.querySelector('[data-widget="cleantv-weather"] .cw-wx-wind').className }));
+    check('A display toggle clears its tick and hides only its slot', toggled.tick === 'false' && / is-off/.test(toggled.wind), toggled);
+    await act('cleantv.weather.show.wind');
+
+    // Home: fixed slots in Dock and List for every combination of the five toggles.
+    const geometry = () => current.evaluate(sel => {
+      const c = document.querySelector(sel), scale = document.getElementById('stage').getBoundingClientRect().width / 1920;
+      if (!c || c.hidden || !c.getClientRects().length) return null;
+      const box = e => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map(v => Math.round(v / scale)); };
+      const slots = {};
+      c.querySelectorAll('[data-slot]').forEach(e => { slots[e.getAttribute('data-slot')] = { box: box(e), shown: getComputedStyle(e).visibility !== 'hidden', text: e.textContent }; });
+      return { card: box(c), slots, icon: c.querySelector('.cw-wx-icon svg') ? box(c.querySelector('.cw-wx-icon svg')) : null };
+    }, card);
+    const showOnly = flags => current.evaluate(show => { const s = CleanTVWeather.state(); CleanTVStore.write('cleantv.weather.v1', { place: s.place, show, forecast: s.forecast }); CleanTVWeather.reload(); ShoreQA.render(); }, flags);
+    const KEYS = ['name', 'temp', 'range', 'wind', 'icon'];
+    for (const layoutName of ['dock', 'list']) {
+      await look({ layout: layoutName }); await scene('home');
+      const full = await geometry();
+      check(layoutName + ': the widget shows Bonn with a 96px pictogram', full && full.slots.name.text === 'Bonn' && full.slots.temp.text === '8°' && /^↑ 10° · ↓ 8°$/.test(full.slots.range.text) && full.slots.wind.text === '5 km/h' && full.icon && full.icon[2] === 96 && full.icon[3] === 96, full);
+      check(layoutName + ': the card sits below the clock' + (layoutName === 'dock' ? ' at left 140, top 260' : ', right-aligned at 1780, top 300'), layoutName === 'dock' ? full.card[0] === 140 && full.card[1] === 260 : full.card[0] + full.card[2] === 1780 && full.card[1] === 300, full.card);
+      const mirrored = layoutName === 'list' ? full.slots.icon.box[0] > full.slots.temp.box[0] : full.slots.icon.box[0] < full.slots.temp.box[0];
+      check(layoutName + ': the pictogram sits ' + (layoutName === 'list' ? 'right of' : 'left of') + ' the temperature', mirrored, full.slots);
+      const moved = [];
+      for (let mask = 0; mask < 32; mask++) {
+        const flags = Object.fromEntries(KEYS.map((k, i) => [k, !(mask & (1 << i))]));
+        await showOnly(flags);
+        const g = await geometry();
+        if (mask === 31) { if (g) moved.push({ mask, expected: 'hidden', g }); continue; }
+        const wrong = !g || !same(g.card, full.card) || KEYS.some(k => g.slots[k].shown !== flags[k] || !same(g.slots[k].box, full.slots[k].box));
+        if (wrong) moved.push({ mask, g });
+      }
+      await showOnly(Object.fromEntries(KEYS.map(k => [k, true])));
+      check(layoutName + ': every toggle combination keeps each slot and the card in place; all off hides the card', moved.length === 0, moved.slice(0, 3));
+    }
+    check('The widget plate uses no live filters', (await noLiveFilters()).length === 0, await noLiveFilters());
+
+    // Legibility: the ink against the brightest (or, for dark ink, darkest) tenth of the plate behind it.
+    const contrast = async () => {
+      const clip = await current.evaluate(sel => { const c = document.querySelector(sel), r = c.getBoundingClientRect(); c.querySelector('.cw-content').style.visibility = 'hidden'; return { x: r.x, y: r.y, width: r.width, height: r.height }; }, card);
+      const png = (await current.screenshot({ clip })).toString('base64');
+      return current.evaluate(async ([sel, b64]) => {
+        const c = document.querySelector(sel); c.querySelector('.cw-content').style.visibility = '';
+        const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode();
+        const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height;
+        const g = canvas.getContext('2d'); g.drawImage(img, 0, 0);
+        const d = g.getImageData(0, 0, canvas.width, canvas.height).data, px = [];
+        const lin = v => { v /= 255; return v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4); }, L = (r, gg, b) => .2126 * lin(r) + .7152 * lin(gg) + .0722 * lin(b);
+        for (let i = 0; i < d.length; i += 4) px.push([d[i], d[i + 1], d[i + 2], L(d[i], d[i + 1], d[i + 2])]);
+        px.sort((a, b) => a[3] - b[3]);
+        const pick = q => px[Math.floor(q * (px.length - 1))], rgb = s => s.match(/[\d.]+/g).slice(0, 3).map(Number);
+        const ratio = (ink, alpha) => {
+          const inkL = L(ink[0], ink[1], ink[2]), bg = inkL > pick(.5)[3] ? pick(.9) : pick(.1);
+          const mix = ink.map((v, i) => v * alpha + bg[i] * (1 - alpha)), m = L(mix[0], mix[1], mix[2]);
+          return +((Math.max(m, bg[3]) + .05) / (Math.min(m, bg[3]) + .05)).toFixed(2);
+        };
+        return { big: ratio(rgb(getComputedStyle(c.querySelector('.cw-big')).color), 1), small: ratio(rgb(getComputedStyle(c).color), .8) };
+      }, [card, png]);
+    };
+    const weak = [];
+    for (const layoutName of ['dock', 'list']) {
+      for (const w of walls) { await look({ bg: 'photo', wall: w.id, layout: layoutName }); await scene('home'); const r = await contrast(); if (r.big < 4 || r.small < 3) weak.push([layoutName, w.id, r]); }
+      for (const bg of ['dark', 'light']) { await look({ bg, layout: layoutName }); await scene('home'); const r = await contrast(); if (r.big < 7 || r.small < 4.5) weak.push([layoutName, bg, r]); }
+    }
+    check('Weather text is legible on every photo (4:1 temperature, 3:1 smaller lines) and on dark and light (7:1, 4.5:1)', weak.length === 0, weak);
+
+    // 720p: the same layout, scaled with the stage.
+    await look({ bg: 'photo', wall: walls[0].id, layout: 'dock' }); await scene('home');
+    const big = await geometry();
+    await current.setViewportSize({ width: 1280, height: 720 });
+    await current.waitForFunction(() => Math.round(document.getElementById('stage').getBoundingClientRect().width) === 1280);
+    const small = await geometry();
+    const clipped = await current.evaluate(sel => [...document.querySelectorAll(sel + ' [data-slot]')].filter(e => e.scrollWidth > e.clientWidth + 1).map(e => e.getAttribute('data-slot')), card);
+    check('At 720p the card and every slot keep their stage geometry without clipping', same(small, big) && clipped.length === 0, { big, small, clipped });
+    await current.setViewportSize({ width: 1920, height: 1080 });
+
+    // Restart without adaptive ink, as on the 2017 TV: the stored place and forecast render at once without
+    // a request, and the curated ink stays legible on every photo.
+    const stored = await current.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter(k => /^clean(tv|frame)\./.test(k)).map(k => [k, localStorage.getItem(k)])));
+    const before = seen.length;
+    await closePage();
+    await page({ seed: undefined }, async p => {
+      p.__allowExternal = ORIGINS;
+      await serve(p);
+      await p.addInitScript(entries => {
+        if (!sessionStorage.getItem('__cleantv_weather')) { Object.keys(entries).forEach(k => localStorage.setItem(k, entries[k])); sessionStorage.setItem('__cleantv_weather', '1'); }
+        Object.defineProperty(window, 'CleanFrameAdaptiveInk', { configurable: true, get: () => ({}), set: () => {} });
+      }, stored);
+    });
+    await scene('home');
+    check('After a restart the cached weather shows without a request', (await geometry())?.slots.temp.text === '8°' && seen.length === before, seen.slice(before));
+    const curated = [];
+    for (const layoutName of ['dock', 'list']) for (const w of walls) { await look({ bg: 'photo', wall: w.id, layout: layoutName }); await scene('home'); const r = await contrast(); if (r.big < 4 || r.small < 3) curated.push([layoutName, w.id, r]); }
+    check('Without adaptive ink (2017 TV) the weather text stays legible on every photo', curated.length === 0, curated);
+    // Disabling the package hides the card and stops requests.
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.cleantv-weather'); await act('addon.toggle.cleantv-weather');
+    await current.waitForFunction(() => CleanFrameAddons.state().installed['cleantv-weather'].enabled === false);
+    await scene('home');
+    check('A disabled package hides the weather card', (await geometry()) === null && seen.length === before, seen.slice(before));
+  });
   await run('Settings focus never changes the applied Home', async () => {
     await page();
     for (const name of ['background', 'layout', 'typography', 'focus', 'samsung']) {
