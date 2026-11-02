@@ -94,6 +94,16 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(backup['project'], before)
         self.assertNotEqual(result['etag'], etag)
 
+    def test_import_keeps_the_favourites_rotation_list(self):
+        _, etag = self.store.read()
+        capture = self.tv_capture()
+        capture['preferences']['favourites'] = ['mint', 'summit', 'MINT', 'bad id']
+        with patch.object(self.store.tv, 'read_draft', return_value=capture):
+            self.store.import_tv(etag)
+        project, _ = self.store.read()
+        self.assertEqual(project['preferences']['favourites'], ['mint', 'summit'], 'Favourites are imported and sanitised')
+        self.assertEqual(project['basePrefs']['favourites'], ['mint', 'summit'])
+
     def test_import_rejects_stale_request_without_contacting_tv(self):
         with patch.object(self.store.tv, 'read_draft') as capture:
             with self.assertRaises(DraftConflict): self.store.import_tv('stale')
