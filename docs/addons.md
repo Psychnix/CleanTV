@@ -180,13 +180,25 @@ Keep widget and view CSS free of `gap`, the `inset` shorthand, `:focus-visible` 
 | --- | --- |
 | Playing | 5 s, or once per track 750 ms after its end if sooner (a track still at its end afterwards, for example on a stalled device, stays at 5 s) |
 | Paused | 15 s |
-| 204 or no item (nothing playing) | 30 s, then 60 s after five minutes |
+| 204 or no item (nothing playing, also while a card is held) | 30 s, then 60 s after five minutes |
 | After a control | 750 ms |
 | 429 | `Retry-After` when the TV can read it (Spotify sends no `Access-Control-Expose-Headers` today), else 30 s doubling to 5 minutes |
 | 5xx or network error | 10 s doubling to 60 s |
 | 403 | 60 s ("Spotify denied access. Check Premium and the Developer app's users.") |
 
 Returning to Home polls at once unless a backoff is running, and at most once per second. Controls send `PUT /me/player/play` or `/pause` and `POST /me/player/next` or `/previous` with `?device_id=` of the active device and no body. A 403 with reason `PREMIUM_REQUIRED` shows "Spotify Premium is required for playback controls." and disables the buttons for the session; a 403 with another player reason (for example "Restriction violated") shows that Spotify could not apply the request, a 403 without a reason the access message; 404 shows that no device is active. A control error stays at least 5 s and is then cleared by the next successful poll; the Premium, save and cover messages stay. Restricted devices and `actions.disallows` disable the matching buttons without a request. `cleanframe:spotify` is sent only when the state changes; a pure progress update only when it drifts by two seconds, because the card extrapolates the bar itself. The cover nearest 300 px from `i.scdn.co` or `image-cdn-ak`/`image-cdn-fa.spotifycdn.com` is rewritten to `https://i.scdn.co/image/<id>`, preloaded with `new Image()` and shown only after it loaded; there is no pixel analysis, so the cover colour stays the host fallback.
+
+### Held card (Spotify on this TV)
+
+Observed on the owner's UE40MU6179: when the Samsung Spotify app plays and CleanTV comes to the front, Tizen pauses the app (reopening it continues the track at the same position), and its Connect device leaves the player a few seconds later: the first `GET /me/player` still shows the track, then 204 follows. Phone playback is not affected. So that the card does not vanish, `tizen-spotify.js` remembers the last 200 with an item (time, device type and ID, play state, position) and when CleanTV last became visible (the start and every `visibilitychange` to visible). A 204 or a 200 without an item holds the card instead of idling only if all of these apply:
+
+- that 200 arrived during the current visible period (hiding CleanTV forgets it);
+- its `device.type` is `TV`, compared without case (`THIS_TV` and `onThisTv()`); a smartphone, speaker, computer or missing type is never held;
+- the vanish comes at most 60 s after CleanTV became visible.
+
+The held state keeps title, artist, cover and `deviceName`, has status `paused`, the last position (advanced to the vanish if it was playing, at most the duration), `actions` `{previous: false, toggle: true, next: false}` even after `PREMIUM_REQUIRED`, and `held: true`, a field that is absent otherwise (Android never sets it). Polling continues at the nothing-playing cadence; the next 200 with an item replaces the hold. A 200 without an item that names another device (another type or another device ID, for example an ad on a phone) is that device, not the vanish: it never holds and ends a hold at once. Hiding CleanTV, sign out, reauth, a new sign-in (perhaps another account), disabling or removing the package, and 30 minutes of continuous nothing-playing (from the vanish) return to idle; each also forgets the remembered state, so a 204 right afterwards holds nothing. While held, `control()` sends no request and answers "Continue in Spotify". `main.js` turns every OK on the held card, compact or expanded, into the Open Spotify launch of `rJeHak5zRg.Spotify` (`FrameDevice.launchApp`), keeps Previous and Next disabled (focus left on one of them when the hold begins moves to the play button), and the play button, the card's status line and the settings status read "Continue in Spotify" ("In Spotify fortsetzen").
+
+To confirm on the TV: the exact `device.type` the Samsung Spotify app reports for itself is unverified. `THIS_TV` assumes Spotify's `TV`; if `GET /me/player` shows another value while the TV app plays, the card vanishes as before and only that constant needs to change.
 
 ### Network and diagnosis
 
@@ -202,7 +214,7 @@ Spotify traffic exists only while the Spotify package is installed and enabled; 
 - The relay stores, per pairing and for at most ten minutes, the PKCE challenge, the TV's state, the hash of the poll secret and the one-time code (or Spotify's error) with its confirmation nonce. It never sees the verifier, the poll secret, a token or a client secret, so the code is useless to the relay. Workers Logs are disabled.
 - The code is useless without the verifier, which only the pairing's creator holds, and the relay releases it only after the phone confirmed the code shown on the TV. Anyone can create a pairing; without that step its creator could send the link to an account that approved the app before (Spotify may then skip its consent screen) and redeem the code. Remaining risk: a victim who follows a phishing message that also quotes the code. A stronger option, if ever needed, is a code from the phone page that the user types on the TV (see `relay/spotify-worker/README.md`).
 - The phone's browser history keeps the `/callback` address with the one-time code; without the verifier on the TV it cannot be redeemed, and the relay deletes it once the TV collected it.
-- Tests use synthetic tokens and routed fakes only (`scripts/test-tizen-spotify.mjs` in `check:device`, the Tizen Spotify section of `check-browser.mjs`, the Spotify states of `check-legacy.mjs`).
+- Tests use synthetic tokens and routed fakes only (`scripts/test-tizen-spotify.mjs` in `check:device`, the Tizen Spotify sections of `check-browser.mjs`, the Spotify states of `check-legacy.mjs`).
 ## Weather (`cleantv-weather`)
 
 `app/tizen-weather.js` adds the Samsung-only kind `weather`. The package is `cleantv-packages/cleantv-weather/<version>.json` in the CleanTV catalog: API 1 metadata only, the ID must be `cleantv-weather` ("The weather add-on must use the ID cleantv-weather.") and other fields are refused ("The weather add-on has unsupported fields."). Behaviour, data sources and requests live in the app; the package only switches it on.

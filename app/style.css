@@ -879,8 +879,12 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000}
 
 /* CleanTV weather widget (app/tizen-weather.js). Fixed slots: a switched-off element keeps its place,
    so nothing moves. Dock reads left to right; List mirrors it at the right edge. The pictogram is a
-   CleanTVIcon on the 48 grid at 96px; its glass bodies are the only filled shapes, in the ink copy. */
-.cw-wx{position:relative;width:400px}
+   CleanTVIcon on the 48 grid at 96px; its glass bodies are the only filled shapes, in the ink copy.
+   The width is fixed (slots are absolute, so they add no intrinsic width) and sized to the widest
+   content: the high/low line at its coldest (two negative two-digit values reaches 314px from the box
+   left), above the three-digit wind and the credit line, so the card hugs its content without the
+   empty right margin a wider box would show. A longer place name ellipsizes, as the header always did. */
+.cw-wx{position:relative;width:320px}
 .cw-wx-defs{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden}
 .cw-wx-place{height:36px}
 .cw-wx-body{position:relative;height:136px;margin-top:12px}

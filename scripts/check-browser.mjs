@@ -801,6 +801,116 @@ try {
     check('Sign out removes the stored sign-in', !stored.keys.length && /Not signed in/.test(await current.locator('#appearanceRows').innerText()), stored.keys);
     check('Preflights went only to the routed fakes', log.preflights.every(o => [RELAY, ACCOUNTS, API].includes(o)), log.preflights);
   });
+  await run('Tizen Spotify: the TV app paused by CleanTV keeps its card', async () => {
+    // Tizen pauses the Samsung Spotify app when CleanTV comes to the front; its Connect device then
+    // vanishes (204). Routed fakes for accounts.spotify.com, api.spotify.com and i.scdn.co; a seeded sign-in.
+    const ACCOUNTS = 'https://accounts.spotify.com', API = 'https://api.spotify.com', IMAGES = 'https://i.scdn.co', COVER = IMAGES + '/image/ab67616d00001e02' + '6'.repeat(24);
+    const cors = { 'access-control-allow-origin': '*' }, PACKAGE = { api: 1, id: 'spotify', name: 'Spotify', version: '1.0.0', kind: 'spotify', description: 'Spotify playback and account controls', author: 'CleanFrame', license: 'MIT', enabled: true };
+    const slot = data => { const json = JSON.stringify(data); return JSON.stringify({ v: 1, seq: 1, sum: createHash('sha256').update(json).digest('hex'), data: json }); };
+    const seeds = { addons: slot({ installed: { spotify: PACKAGE }, catalog: [], catalogInfo: { checked: false, total: 0, compatible: 0 } }), token: slot({ refreshToken: 'qa-hold-refresh' }) };
+    // live.gate, while set, keeps the vanishing poll's 204 back until live.release(); live.waiting tells that it arrived.
+    const log = { controls: [] }, live = { type: 'TV', gone: false, gate: null, release: null, waiting: false };
+    const json = (route, body) => route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(body) });
+    const serve = async p => {
+      p.__allowExternal = [ACCOUNTS, API, IMAGES];
+      await p.addInitScript(s => { if (!sessionStorage.getItem('__spotifySeeded')) { localStorage.setItem('cleantv.addons.v1.a', s.addons); localStorage.setItem('cleantv.spotify.v1.a', s.token); sessionStorage.setItem('__spotifySeeded', '1'); } }, seeds);
+      await p.route(url => url.origin === ACCOUNTS, route => route.request().method() === 'OPTIONS' ? route.fulfill({ status: 204, headers: cors })
+        : json(route, { access_token: 'qa-hold-access', token_type: 'Bearer', expires_in: 3600, scope: 'user-read-playback-state user-modify-playback-state' }));
+      await p.route(url => url.origin === API, async route => {
+        const r = route.request(), url = new URL(r.url());
+        if (r.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { ...cors, 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS', 'access-control-allow-headers': 'authorization, content-type' } });
+        if (url.pathname !== '/v1/me/player') { log.controls.push(r.method() + ' ' + url.pathname); return route.fulfill({ status: 204, headers: cors }); }
+        if (live.gone) { if (live.gate) { live.waiting = true; await live.gate; } return route.fulfill({ status: 204, headers: cors }); }
+        return json(route, { device: { id: 'qa-tv-1', is_active: true, is_restricted: false, name: 'QA Samsung TV', type: live.type }, progress_ms: 42000, is_playing: true, actions: { disallows: {} },
+          item: { type: 'track', name: 'QA held track', duration_ms: 180000, artists: [{ name: 'QA Artist' }], album: { images: [{ url: COVER, width: 300, height: 300 }] } } });
+      });
+      await p.route(url => url.origin === IMAGES, route => route.fulfill({ status: 200, contentType: 'image/png', headers: cors, body: readFileSync(root + 'app/icon.png') }));
+    };
+    const card = () => current.evaluate(() => {
+      const button = action => document.querySelector('[data-action="spotify.' + action + '"]'), source = document.getElementById('spotifySource');
+      return { hidden: document.getElementById('spotifyPlayer').hidden, title: document.getElementById('spotifyCompactTitle').textContent,
+        play: button('toggle').getAttribute('aria-label'), playDisabled: button('toggle').getAttribute('aria-disabled'), previous: button('previous').getAttribute('aria-disabled'), next: button('next').getAttribute('aria-disabled'),
+        source: source.textContent, sourceHidden: source.hidden, compact: document.getElementById('spotifyCompact').getAttribute('aria-label'),
+        position: document.getElementById('spotifyPosition').textContent, state: ShoreQA.state().spotify };
+    });
+    const launches = () => current.evaluate(() => __tv.calls.filter(c => c.method === 'launch' && c.id === 'rJeHak5zRg.Spotify').length);
+    await page({}, serve);
+    await current.waitForFunction(() => !document.getElementById('spotifyPlayer').hidden && document.getElementById('spotifyCompactTitle').textContent === 'QA held track' && ShoreQA.state().spotify.status === 'playing');
+    let shown = await card();
+    check('The TV device plays: a normal card without the held field', !('held' in shown.state) && shown.state.deviceName === 'QA Samsung TV' && shown.play === 'Pause' && shown.source === 'QA Samsung TV', shown);
+    // The next poll (5 s while playing) finds the device gone.
+    live.gone = true;
+    await current.waitForFunction(() => ShoreQA.state().spotify.held === true, null, { timeout: 15000 });
+    shown = await card();
+    check('204 soon after CleanTV came to the front keeps the card as paused', !shown.hidden && shown.title === 'QA held track' && shown.state.status === 'paused' && shown.state.deviceName === 'QA Samsung TV'
+      && same(shown.state.actions, { previous: false, toggle: true, next: false }), shown);
+    check('The held card reads Continue in Spotify; previous and next are disabled', shown.play === 'Continue in Spotify' && shown.playDisabled === 'false' && shown.previous === 'true' && shown.next === 'true'
+      && shown.source === 'Continue in Spotify' && !shown.sourceHidden && shown.compact === 'Continue in Spotify', shown);
+    await current.waitForTimeout(1200);
+    check('The held position stays still', (await card()).position === shown.position, shown.position);
+    await current.keyboard.press('ArrowDown');
+    await current.waitForFunction(() => document.getElementById('spotifyPlayer').classList.contains('is-expanded'));
+    check('Remote focus reaches the held play button', (await state()).focusAction === 'spotify.toggle', (await state()).focusAction);
+    await current.keyboard.press('Enter');
+    await current.waitForFunction(() => __tv.calls.some(c => c.id === 'rJeHak5zRg.Spotify'));
+    check('OK on the held play button launches rJeHak5zRg.Spotify, without a Web API request', await launches() === 1 && !log.controls.length, log.controls);
+    // Once the card is compact again, OK opens Spotify at once instead of revealing the controls.
+    await current.waitForFunction(() => !document.getElementById('spotifyPlayer').classList.contains('is-expanded'), null, { timeout: 6000 });
+    await current.keyboard.press('Enter');
+    await current.waitForFunction(() => __tv.calls.filter(c => c.id === 'rJeHak5zRg.Spotify').length === 2);
+    check('OK on the compact held card launches Spotify too', await launches() === 2 && !log.controls.length && (await state()).spotify.held === true, log.controls);
+    await current.keyboard.press('ArrowLeft'); await current.keyboard.press('ArrowRight');
+    check('Previous and next never take the focus', (await state()).focusAction === 'spotify.toggle', (await state()).focusAction);
+    await call('preferences', { language: 'de' });
+    shown = await card();
+    check('German: In Spotify fortsetzen', shown.play === 'In Spotify fortsetzen' && shown.source === 'In Spotify fortsetzen' && shown.compact === 'In Spotify fortsetzen', shown);
+    await scene('settings'); await act('settings.group.addons'); await act('addon.details.spotify'); await act('group.spotify');
+    check('German settings status: In Spotify fortsetzen', /In Spotify fortsetzen/.test(await current.locator('#appearanceRows').innerText()));
+    await call('preferences', { language: 'en' }); await scene('home');
+    check('Still held after the settings round trip', (await state()).spotify.held === true && (await card()).play === 'Continue in Spotify');
+    // A hold that arrives while Next or Previous has the focus moves it to Continue in Spotify; OK there opens Spotify.
+    for (const [key, action] of [['ArrowRight', 'next'], ['ArrowLeft', 'previous']]) {
+      live.gone = false;
+      await current.reload(); await ready();
+      await current.waitForFunction(() => !document.getElementById('spotifyPlayer').hidden && ShoreQA.state().spotify.status === 'playing');
+      // The next poll (5 s while playing) finds the device gone and waits at the gate meanwhile.
+      live.gate = new Promise(resolve => { live.release = resolve; }); live.waiting = false; live.gone = true;
+      for (let i = 0; i < 200 && !live.waiting; i++) await current.waitForTimeout(50);
+      check(action + ': the vanishing poll waits at the gate', live.waiting);
+      await current.keyboard.press('ArrowDown');
+      await current.waitForFunction(() => document.getElementById('spotifyPlayer').classList.contains('is-expanded'));
+      await current.keyboard.press(key);
+      check(action + ' takes the focus while the TV plays', (await state()).focusAction === 'spotify.' + action, (await state()).focusAction);
+      const controls = log.controls.length;
+      live.release(); live.gate = null;
+      await current.waitForFunction(() => ShoreQA.state().spotify.held === true);
+      const focus = await current.evaluate(a => {
+        const button = name => document.querySelector('[data-action="spotify.' + name + '"]');
+        return { expanded: document.getElementById('spotifyPlayer').classList.contains('is-expanded'), action: ShoreQA.state().focusAction,
+          toggle: button('toggle').classList.contains('is-focus'), left: button(a).classList.contains('is-focus'), disabled: button(a).getAttribute('aria-disabled') };
+      }, action);
+      check('A hold while ' + action + ' has the focus moves it to Continue in Spotify', focus.expanded && focus.action === 'spotify.toggle' && focus.toggle && !focus.left && focus.disabled === 'true', focus);
+      await current.keyboard.press('Enter');
+      await current.waitForFunction(() => __tv.calls.filter(c => c.id === 'rJeHak5zRg.Spotify').length === 1);
+      check('OK there launches Spotify once, without a Web API request (' + action + ')', await launches() === 1 && log.controls.length === controls, log.controls);
+      // Compact again: Down wakes the card on Continue in Spotify, and OK on the compact card opens Spotify too.
+      await current.waitForFunction(() => !document.getElementById('spotifyPlayer').classList.contains('is-expanded'), null, { timeout: 6000 });
+      await current.keyboard.press('ArrowDown');
+      await current.waitForFunction(() => document.getElementById('spotifyPlayer').classList.contains('is-expanded'));
+      check('Waking the held card after ' + action + ' lands on Continue in Spotify', (await state()).focusAction === 'spotify.toggle', (await state()).focusAction);
+      await current.waitForFunction(() => !document.getElementById('spotifyPlayer').classList.contains('is-expanded'), null, { timeout: 6000 });
+      await current.keyboard.press('Enter');
+      await current.waitForFunction(() => __tv.calls.filter(c => c.id === 'rJeHak5zRg.Spotify').length === 2);
+      check('OK on the compact held card launches Spotify (' + action + ')', await launches() === 2 && log.controls.length === controls, log.controls);
+    }
+    // A phone that vanishes is not held: the card disappears as before.
+    live.type = 'Smartphone'; live.gone = false;
+    await current.reload(); await ready();
+    await current.waitForFunction(() => ShoreQA.state().spotify.status === 'playing' && ShoreQA.state().spotify.deviceName === 'QA Samsung TV');
+    live.gone = true;
+    await current.waitForFunction(() => document.getElementById('spotifyPlayer').hidden && ShoreQA.state().spotify.status === 'idle', null, { timeout: 15000 });
+    check('A Smartphone device that vanishes hides the card', !('held' in (await state()).spotify));
+  });
   await run('CleanTV widget slot geometry, ink and glass', async () => {
     // A queued test widget and a queued view, registered before main.js loads.
     const setup = p => p.addInitScript(() => {
@@ -1078,6 +1188,24 @@ try {
       check(layoutName + ': every toggle combination keeps each slot and the card in place; all off hides the card', moved.length === 0, moved.slice(0, 3));
     }
     check('The widget plate uses no live filters', (await noLiveFilters()).length === 0, await noLiveFilters());
+
+    // The card hugs its content: the fixed .cw-wx box is only as wide as the widest line the widget can
+    // show (the high/low line at its coldest, the three-digit wind, the German credit), with no empty
+    // right margin. A wider box (the old 400px) would leave dead space the owner reported.
+    await look({ layout: 'dock' }); await scene('home');
+    const tight = await current.evaluate(sel => {
+      const c = document.querySelector(sel), scale = document.getElementById('stage').getBoundingClientRect().width / 1920;
+      const R = c.querySelector('[data-slot="range"]'), W = c.querySelector('[data-slot="wind"]'), N = c.querySelector('[data-slot="note"]');
+      const saved = [R.textContent, W.textContent, N.textContent];
+      R.textContent = '↑ −40° · ↓ −40°'; W.textContent = '180 km/h'; N.textContent = 'Wetter: Open-Meteo.com';
+      const rightOf = el => { const r = document.createRange(); r.selectNodeContents(el); return r.getBoundingClientRect().right; };
+      const inner = c.getBoundingClientRect().right - 24 * scale; // the plate's right edge minus its padding; overflow:hidden clips here
+      const over = [['range', R], ['wind', W], ['note', N]].filter(([, el]) => rightOf(el) > inner + 1).map(([k]) => k);
+      const width = Math.round(c.getBoundingClientRect().width / scale);
+      R.textContent = saved[0]; W.textContent = saved[1]; N.textContent = saved[2];
+      return { width, over };
+    }, card);
+    check('The weather card is sized to its content without an empty right margin, and the widest lines still fit', tight.width <= 380 && tight.over.length === 0, tight);
 
     // Legibility: the ink against the brightest (or, for dark ink, darkest) tenth of the plate behind it.
     const contrast = async () => {
