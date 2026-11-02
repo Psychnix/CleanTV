@@ -1,38 +1,99 @@
 import {pixelRatio,distance,setDistance} from './geometry.js';
 import {NativeVideo} from './native-video.js';
+import {initMirror} from './mirror.js';
 const $=id=>document.getElementById(id);
 const round=value=>Math.round(value*100)/100;
 const text=(tag,value)=>{const node=document.createElement(tag);node.textContent=value;return node;};
 
 export function initWorkspace(api){
- let live=false,chat=false,tv=null,tvBusy=false,frameTimer,frameEpoch=0,videoStarted=0,lastFrame=null,chatKey='',reference='',guideDragging=false,lastGuides='',lastTargets='',chatBusy=false;
+ let live=false,chat=false,tv=null,tvBusy=false,debugBusy=false,mirrorStatus='',mirrorLocal='',mirrorChanged=0,mirrorTvVersion='',frameTimer,frameEpoch=0,videoStarted=0,lastFrame=null,chatKey='',reference='',guideDragging=false,lastGuides='',lastTargets='',chatBusy=false;
  const ratio=()=>pixelRatio(api.liveProject?.ui.resolution),currentGuides=()=>((api.liveProject?.guides)||[]).filter(g=>g.view===api.liveProject.ui.view&&g.layout===api.liveProject.preferences.layout);
  const visiblePixel=value=>round(value*ratio());
  const video=new NativeVideo($('liveFrame'),(width,height)=>{if(!live)return;lastFrame={width,height};$('liveEmpty').hidden=true;$('retryLive').hidden=true;$('dimensions').textContent=`${width} × ${height} · Live`;},error=>{if(!live)return;$('liveEmpty').hidden=false;$('liveEmpty').textContent=error.message;$('liveCaption').textContent='Live-Verbindung unterbrochen';$('retryLive').hidden=false;});
  try{$('liveProfile').value=localStorage.getItem('cleanframe.liveProfile')==='native'?'native':'smooth';}catch{$('liveProfile').value='smooth';}
  const guarded=fn=>(...args)=>Promise.resolve().then(()=>fn(...args)).catch(api.report);
+ // Samsung TVs have no video channel: Live is the Live-Spiegel, redrawn from CleanTV's state.
+ const tizen=()=>tv?.platform==='tizen';
+ const ANDROID_NOTE='Live zeigt einen kontinuierlichen Videostream. Die Übertragung einer fertigen Version erfolgt gemeinsam im Chat.';
+ const SAMSUNG_NOTE='Live zeigt einen Spiegel, der aus dem Zustand von CleanTV nachgezeichnet wird – kein Kamerabild. Dafür startet CleanTV am Fernseher einmal im Debug-Modus neu, nur über „CleanTV im Debug-Modus neu starten“.';
+ const PHASES={starting:'Live-Spiegel startet …',connecting:'Verbindung zum TV-Inspektor wird aufgebaut …',stopped:'Live-Spiegel ist angehalten.',error:'Die Verbindung zum Fernseher wurde unterbrochen.',unconfigured:'Kein Samsung-Fernseher eingerichtet.','debug-off':'Debug-Modus aus.'};
+ const mirror=initMirror({phase:mirrorPhase,applied:mirrorApplied,problem:mirrorProblem});
 
  function source(value){
-  live=value;document.body.classList.toggle('live-mode',live);
+  live=value;const mirrored=live&&tizen();document.body.classList.toggle('live-mode',live);document.body.classList.toggle('mirror-mode',mirrored);
   $('draftTab').classList.toggle('active',!live);$('liveTab').classList.toggle('active',live);
   $('draftTab').setAttribute('aria-pressed',!live);$('liveTab').setAttribute('aria-pressed',live);
-  $('liveCaption').hidden=!live;$('liveControls').hidden=!live;$('retryLive').hidden=!live;stopVideo();api.resize();
-  if(live){$('viewTitle').textContent='Produktiv am Fernseher';api.notice('Live vom Fernseher · kontinuierlicher Videostream');startVideo();}
+  $('liveCaption').hidden=!live;$('liveControls').hidden=!live||mirrored;$('retryLive').hidden=!live||mirrored;$('mirrorLabel').hidden=!mirrored;$('mirrorImport').hidden=!mirrored;$('mirrorDebug').hidden=true;stopVideo();mirror.stop();mirrorChanged=0;mirrorTvVersion='';api.resize();
+  if(mirrored){$('viewTitle').textContent='Produktiv am Fernseher';api.notice('Live-Spiegel vom Fernseher · nachgezeichnet aus dem Zustand von CleanTV, kein Kamerabild');startMirror();}
+  else if(live){$('viewTitle').textContent='Produktiv am Fernseher';api.notice('Live vom Fernseher · kontinuierlicher Videostream');startVideo();}
   else{$('liveFrame').hidden=true;$('liveEmpty').hidden=true;api.refresh(true);$('viewTitle').textContent=$('scene').selectedOptions[0]?.textContent||'Entwurf';api.notice('Entwurf mit Beispieldaten. Dein TV bleibt unverändert.');}
  }
  async function status(){
   if(tvBusy||document.hidden)return;tvBusy=true;
-  try{tv=await api.request('tv/status');const label=tv.ready?'Bereit zur Übertragung':tv.connected?'TV verbunden':'TV nicht verbunden';
-   $('tvStatus').className='connection '+(tv.ready?'ready':tv.connected?'connected':'offline');$('tvStatus').querySelector('span').textContent=label;
+  try{const was=tizen();tv=await api.request('tv/status');const samsung=tizen(),good=samsung?tv.state==='ready':tv.ready;
+   const label=samsung?(good?'CleanTV bereit':tv.connected?'TV verbunden':tv.configured?'TV nicht erreichbar':'TV nicht eingerichtet'):tv.ready?'Bereit zur Übertragung':tv.connected?'TV verbunden':'TV nicht verbunden';
+   $('tvStatus').className='connection '+(good?'ready':tv.connected?'connected':'offline');$('tvStatus').querySelector('span').textContent=label;
    const dl=document.createElement('dl');const pair=(key,value)=>{dl.append(text('dt',key),text('dd',value||'–'));};
-   pair('Fernseher',tv.label);pair('Verbindung',tv.connected?tv.address:tv.message);pair('Installiert',tv.version);
-   pair('Android UI',tv.uiResolution?.join(' × '));pair('TV Panel',tv.panelResolution?.join(' × '));
-   pair('Vorbereitet',tv.preparedVersion);pair('Übertragung',tv.releaseMessage);pair('Geprüft',new Date(tv.checkedAt*1000).toLocaleTimeString('de-DE'));
+   if(samsung){
+    pair('Fernseher',tv.label);pair('Verbindung',tv.message);pair('Adresse',tv.address);pair('Debug-Modus',tv.connected?(tv.debug?'an':'aus'):'');
+    pair('CleanTV',tv.cleantv?'bereit'+(tv.version?' · '+tv.version:''):'');pair('Live-Spiegel',mirror.active?mirrorStatus:'aus');
+   }else{
+    pair('Fernseher',tv.label);pair('Verbindung',tv.connected?tv.address:tv.message);pair('Installiert',tv.version);
+    pair('Android UI',tv.uiResolution?.join(' × '));pair('TV Panel',tv.panelResolution?.join(' × '));pair('Vorbereitet',tv.preparedVersion);
+   }
+   pair('Übertragung',tv.releaseMessage);pair('Geprüft',new Date(tv.checkedAt*1000).toLocaleTimeString('de-DE'));
    $('tvDetails').replaceChildren(dl);$('connectTv').disabled=!tv.configured;
+   $('restartDebug').hidden=!samsung;$('restartDebug').disabled=!tv.connected||debugBusy;$('tvNote').textContent=samsung?SAMSUNG_NOTE:ANDROID_NOTE;
+   $('prepare').hidden=samsung;  // Samsung builds are installed with npm run tv:install, not prepared here (#14).
+   if(live&&was!==samsung)source(true);
   }catch(error){$('tvStatus').querySelector('span').textContent='TV Status nicht erreichbar';$('tvStatus').className='connection offline';$('tvDetails').textContent=error.message;}
   finally{tvBusy=false;}
  }
  function stopVideo(){clearTimeout(frameTimer);frameEpoch++;video.stop();}
+ function startMirror(){
+  if(!live||!tizen()||document.hidden)return;
+  if(!mirror.shown){$('liveEmpty').hidden=false;$('liveEmpty').textContent='Live-Spiegel wird verbunden …';}
+  $('liveCaption').textContent='Zustand wird vom Fernseher gelesen';mirror.start();
+ }
+ function overlay(state){
+  const message=state?.hidden?'CleanTV ist am Fernseher gerade nicht im Vordergrund. Der Spiegel zeigt den letzten Stand.':state?.ready===false?'CleanTV lädt am Fernseher …':'';
+  $('liveEmpty').hidden=!message;if(message)$('liveEmpty').textContent=message;
+ }
+ // 'Stand' is the last confirmed read (now − age), not the last change. A quiet TV still reads; a silent
+ // one is flagged. The last change time is shown separately once a state has been drawn.
+ function mirrorCaption(age){
+  const read=age==null?Date.now():Date.now()-Math.round(age*1000);
+  let caption='Stand '+new Date(read).toLocaleTimeString('de-DE')+(mirrorTvVersion?' · TV '+mirrorTvVersion:'')+(mirrorTvVersion&&mirrorLocal&&mirrorTvVersion!==mirrorLocal?' · gezeichnet mit lokaler Version '+mirrorLocal+', Abweichungen möglich':'');
+  if(age!=null&&age>=5)caption+=' · keine Antwort vom TV seit '+Math.round(age)+' s';
+  if(mirrorChanged)caption+=' · zuletzt geändert '+new Date(mirrorChanged).toLocaleTimeString('de-DE');
+  $('liveCaption').textContent=caption;
+ }
+ function mirrorPhase(result,shown){
+  if(!live||!tizen())return;
+  mirrorLocal=result.localVersion||mirrorLocal;mirrorStatus=result.phase==='live'?'läuft':result.message||PHASES[result.phase]||result.phase;
+  $('mirrorDebug').hidden=result.phase!=='debug-off';
+  if(result.phase==='live'&&shown){overlay(mirror.state);mirrorCaption(result.age);return;}
+  $('liveEmpty').hidden=false;$('liveEmpty').textContent=result.phase==='live'?'Live-Spiegel wird aufgebaut …':result.message||PHASES[result.phase]||'Der Live-Spiegel ist nicht verfügbar.';
+ }
+ function mirrorApplied(state){
+  if(!live||!tizen())return;
+  overlay(state);mirrorTvVersion=state.app?.version||'';mirrorChanged=Date.now();mirrorCaption(null);
+  $('dimensions').textContent='1920 × 1080 · nachgezeichnet';
+ }
+ function mirrorProblem(error){if(!live||!tizen())return;mirrorStatus=error.message;$('liveEmpty').hidden=false;$('liveEmpty').textContent=error.message;}
+ function restartDebug(){
+  if(debugBusy)return;
+  const body=document.createElement('div');
+  body.append(text('p','Achtung: CleanTV wird auf dem Fernseher beendet und sofort im Debug-Modus neu gestartet. Das Bild am Fernseher ist dabei kurz weg.'),
+   text('p','Einstellungen, Add-ons und die Spotify-Anmeldung bleiben erhalten. Der Debug-Modus endet, wenn CleanTV am Fernseher geschlossen wird.'),
+   text('p','Während der Live-Spiegel oder ein Import läuft, öffnet sdb den TV-Inspektor auf diesem Computer kurzzeitig für alle Netzwerkschnittstellen (nicht nur lokal). Der Zugang wird nach jedem Lesen sofort wieder geschlossen.'));
+  api.dialog('CleanTV im Debug-Modus neu starten?',body,async()=>{
+   if(debugBusy)return;
+   debugBusy=true;$('restartDebug').disabled=true;$('mirrorDebug').disabled=true;$('dialogSave').textContent='Wird neu gestartet …';api.notice('CleanTV wird am Fernseher im Debug-Modus neu gestartet …');
+   try{await api.request('tv/debug',{});api.notice('CleanTV läuft am Fernseher wieder, jetzt im Debug-Modus. Bitte das Bild am TV prüfen.');}
+   finally{debugBusy=false;$('mirrorDebug').disabled=false;status();}
+  },'Neu starten');
+ }
  function startVideo(){
   if(!live||document.hidden)return;
   stopVideo();videoStarted=Date.now();lastFrame=null;$('liveEmpty').hidden=false;$('liveEmpty').textContent='Live-Video wird verbunden …';
@@ -53,7 +114,8 @@ export function initWorkspace(api){
   }catch(error){if(epoch!==frameEpoch)return;$('liveEmpty').hidden=false;$('liveEmpty').textContent=error.message;$('retryLive').hidden=false;}
   finally{if(live&&epoch===frameEpoch&&!document.hidden)frameTimer=setTimeout(()=>checkVideo(epoch),500);}
  }
- $('retryLive').onclick=startVideo;
+ $('retryLive').onclick=()=>tizen()?startMirror():startVideo();
+ $('restartDebug').onclick=restartDebug;$('mirrorDebug').onclick=restartDebug;
  $('liveProfile').onchange=()=>{try{localStorage.setItem('cleanframe.liveProfile',$('liveProfile').value);}catch{}if(live)startVideo();};
  function openChat(value){chat=value;document.body.classList.toggle('chat-open',chat);document.body.classList.remove('panels-hidden');$('focusWorkspace').textContent='Mehr Platz';
   $('propertiesPanel').hidden=chat;$('chatPanel').hidden=!chat;$('propertiesTab').classList.toggle('active',!chat);$('chatTab').classList.toggle('active',chat);$('toggleChat').setAttribute('aria-pressed',chat);api.resize();if(chat)pollChat();
@@ -75,7 +137,7 @@ export function initWorkspace(api){
  $('chatInput').onkeydown=event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();$('chatForm').requestSubmit();}};
  $('stopAgent').onclick=guarded(async()=>chatState(await api.request('agent/stop',{})));
  $('toggleChat').onclick=()=>openChat(!chat);$('chatTab').onclick=()=>openChat(true);$('propertiesTab').onclick=()=>openChat(false);
- $('importTv').onclick=guarded(async()=>{
+ $('importTv').onclick=$('mirrorImport').onclick=guarded(async()=>{
   const result=await api.importTv();if(!result)return;
   source(false);$('tvPanel').hidden=true;
   api.notice('TV '+result.version+' als Entwurf übernommen. Spotify zeigt Beispieldaten. Vorheriger Entwurf unter „Gespeicherte Zwischenstände“.'+(result.sourceMatches?'':' Hinweis: Die Vorschau verwendet eine andere lokale CleanTV-Version.'));
@@ -127,9 +189,9 @@ export function initWorkspace(api){
   }
  }
  for(const [id,axis]of [['distanceX','x'],['distanceY','y']])$(id).onchange=()=>{const selected=api.selected,other=api.entries.find(e=>e.id===reference),gap=$(id).valueAsNumber;if(!selected||!other||!Number.isFinite(gap))return;const value=setDistance(selected.rect,other.rect,axis,gap/ratio()),key=axis==='x'?'offsetX':'offsetY';const offset=(selected.style[key]||0)+value-selected.rect[axis];if(Math.abs(offset)>(axis==='x'?1920:1080)){api.notice('Dieser Abstand liegt außerhalb der bearbeitbaren Fläche.');return;}api.patch({[key]:offset});renderMeasurements();};
- document.addEventListener('editor:refresh',()=>{renderGuides();rulers();renderMeasurements();if(live){$('viewTitle').textContent='Produktiv am Fernseher';if(lastFrame)$('dimensions').textContent=`${lastFrame.width} × ${lastFrame.height} · Live`;}});
- document.addEventListener('visibilitychange',()=>{if(document.hidden){if(live)stopVideo();}else{status();if(live)startVideo();if(chat)pollChat();}});
- window.addEventListener('pagehide',stopVideo);
+ document.addEventListener('editor:refresh',()=>{renderGuides();rulers();renderMeasurements();if(live){$('viewTitle').textContent='Produktiv am Fernseher';if(tizen()){if(mirror.shown)$('dimensions').textContent='1920 × 1080 · nachgezeichnet';}else if(lastFrame)$('dimensions').textContent=`${lastFrame.width} × ${lastFrame.height} · Live`;}});
+ document.addEventListener('visibilitychange',()=>{if(document.hidden){if(live){stopVideo();mirror.stop();mirrorChanged=0;mirrorTvVersion='';}}else{status();if(live){if(tizen())startMirror();else startVideo();}if(chat)pollChat();}});
+ window.addEventListener('pagehide',()=>{stopVideo();mirror.stop();});
  setInterval(status,12000);setInterval(()=>{if(chat)pollChat();},1000);status();
- api.workspace={video,source,openChat,addGuide,renderMeasurements,get reference(){return reference;},setReference:id=>{reference=id;renderMeasurements();},status};
+ api.workspace={video,mirror,source,openChat,addGuide,renderMeasurements,get reference(){return reference;},setReference:id=>{reference=id;renderMeasurements();},status};
 }

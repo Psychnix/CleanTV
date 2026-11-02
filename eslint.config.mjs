@@ -1,6 +1,7 @@
-// Development only: check ES5 grammar and common runtime mistakes.
+// Development only: check ES5 grammar and common runtime mistakes. The editor's fixed Samsung
+// mirror expression runs in CleanTV on the TV (Chrome 47), so it follows the same rules.
 export default [{ ignores: ['app/vendor/**'] }, {
-  files: ['app/**/*.js'],
+  files: ['app/**/*.js', 'scripts/editor-tizen-mirror.js'],
   languageOptions: {
     ecmaVersion: 5,
     sourceType: 'script',

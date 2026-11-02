@@ -2710,14 +2710,14 @@
     return QA.state();
   };
   if (window.CleanFramePreview) {
-    QA.editorScene = function (name, addonId) {
+    QA.editorScene = function (name, addonId, content) {
       goScene('home');
       if (name.indexOf('appearance.') === 0) { openSettings(); openAppearance(name.substring(11)); if (name === 'appearance.addon-detail') top().addonId = addonId || 'spotify'; }
       else if (name === 'message.addonRemove') { openSettings(); openAppearance('addon-detail'); top().addonId = addonId || 'spotify'; detailOk(top(), { action: 'addon.remove.' + top().addonId }); }
       else if (name === 'wallpaper') { openSettings(); openAppearance('background'); openWallpaper(); }
       else if (name === 'message.signout') { openSettings(); openAppearance('spotify'); detailOk(top(), { action: 'spotify.signout' }); }
       else if (name === 'message.leave') openMessage('leave');
-      else if (name === 'message.error') push({ id: 'message', msg: 'error', content: { title: translate('Try again'), line: 'Diese App konnte nicht geöffnet werden.', note: 'Vorschau eines Verbindungsfehlers', actions: [['back', translate('Back')]] }, f: { b: 0 } });
+      else if (name === 'message.error') push({ id: 'message', msg: 'error', content: content ? { title: content.title || translate('Try again'), line: content.line || '', note: content.note || '', actions: [['back', translate('Back')]] } : { title: translate('Try again'), line: 'Diese App konnte nicht geöffnet werden.', note: 'Vorschau eines Verbindungsfehlers', actions: [['back', translate('Back')]] }, f: { b: 0 } });
       else goScene(name);
       after(); return QA.state();
     };
